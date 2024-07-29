@@ -143,8 +143,6 @@ class CMakeBuild(build_py):
             f"{CMAKE_BUILD_TYPE}",
             f"--target",
             f"TorchMLIRPythonModules",
-            f"--",
-            f"-j{MAX_JOBS}",
         ]
         try:
             subprocess.check_call(cmake_config_args, cwd=cmake_build_dir)
