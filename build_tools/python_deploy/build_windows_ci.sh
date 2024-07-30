@@ -17,6 +17,6 @@ cmake -GNinja -Bbuild_win \
   -DLLVM_ENABLE_ASSERTIONS=ON \
   $GITHUB_WORKSPACE/externals/llvm-project/llvm
 
-cmake --build build_win --config Release
+cmake --build build_win
 
 echo "Build completed successfully"
