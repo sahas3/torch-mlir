@@ -662,7 +662,10 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     )
     emit("aten::adaptive_avg_pool1d : (Tensor, int[]) -> (Tensor)")
     emit("aten::adaptive_avg_pool2d : (Tensor, int[]) -> (Tensor)")
-    emit("aten::_adaptive_avg_pool2d : (Tensor, int[]) -> (Tensor)")
+    emit(
+        "aten::_adaptive_avg_pool2d : (Tensor, int[]) -> (Tensor)",
+        has_canonicalizer=True,
+    )
     emit("aten::_adaptive_avg_pool2d_backward : (Tensor, Tensor) -> (Tensor)")
     emit("aten::adaptive_avg_pool3d : (Tensor, int[]) -> (Tensor)")
     emit("aten::_adaptive_avg_pool3d : (Tensor, int[]) -> (Tensor)")
@@ -1077,6 +1080,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::__is__ : (t1, t2) -> (bool)", has_folder=True)
     emit("aten::__isnot__ : (t1, t2) -> (bool)", has_folder=True)
     emit("aten::__not__ : (bool) -> (bool)", has_folder=True)
+    emit("aten::__or__.bool : (bool, bool) -> (bool)", has_folder=True)
     emit("aten::len.t : (t[]) -> (int)", has_folder=True, has_canonicalizer=True)
     emit("aten::__getitem__.t : (t[], int) -> (t)", has_canonicalizer=True)
     emit("aten::_set_item.t : (t[], int, t) -> (t[])")

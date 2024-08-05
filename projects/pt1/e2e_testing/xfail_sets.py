@@ -16,9 +16,6 @@ from torch_mlir._version import torch_version_for_comparison, version
 print(f"TORCH_VERSION_FOR_COMPARISON =", torch_version_for_comparison())
 
 LINALG_XFAIL_SET = COMMON_TORCH_MLIR_LOWERING_XFAILS | {
-    # Lowering Torch Backend IR -> Linalg-on-Tensors Backend IR failed
-    # 'linalg.depthwise_conv_2d_nchw_chw' op inferred input/output operand #1 has shape's dimension #0 to be 4, but found 8
-    "Conv2dWithPaddingDilationStrideStaticModule_depthwise_multiplier",
     "IscloseStaticModule_basic",
     "IscloseStaticModuleTrue_basic",
     # lowering to torch backend IR fails due to unsupported op: aten.upsample_[mode/dims].vec
@@ -33,6 +30,7 @@ LINALG_XFAIL_SET = COMMON_TORCH_MLIR_LOWERING_XFAILS | {
     # this is added to check the torch.onnx.export -> import_onnx -> torch path
     "DeformConv2D_basic",
     "ReduceAnyDimFloatModule_basic",
+    "UnfoldModule_basic",
 }
 
 LINALG_CRASHING_SET = {
@@ -250,9 +248,6 @@ TORCHDYNAMO_XFAIL_SET = {
     "ScatterValueIntModule_basic",
     # AssertionError: Unregistered operation: torch.aten._unsafe_index_put
     "UnsafeIndexPutHackedTwin1DFloatNonAccumulateModule_basic",
-    # Lowering Torch Backend IR -> Linalg-on-Tensors Backend IR failed
-    # 'linalg.depthwise_conv_2d_nchw_chw' op inferred input/output operand #1 has shape's dimension #0 to be 4, but found 8
-    "Conv2dWithPaddingDilationStrideStaticModule_depthwise_multiplier",
     # AssertionError: Unregistered operation: torch.aten._embedding_bag_forward_only
     "AtenEmbeddingBagStaticModule_basic",
     # Lowering not present for this case
@@ -281,7 +276,9 @@ TORCHDYNAMO_XFAIL_SET = {
     "QuantizedReluInt8_basic",
     "QuantizedReluUint8_basic",
     "Conv2dQInt8Module_basic",
+    "Conv2dQInt8Module_depthwise",
     "Conv2dQInt8Module_grouped",
+    "Conv2dQInt8Module_not_depthwise",
     "ConvTranspose2DQInt8_basic",
     # Dynamo not supporting conv_tbc
     "ConvTbcModule_basic",
@@ -380,8 +377,9 @@ FX_IMPORTER_XFAIL_SET = {
     "ContainsIntList_False",
     "ContainsIntList_True",
     "Conv2dQInt8Module_basic",
+    "Conv2dQInt8Module_depthwise",
     "Conv2dQInt8Module_grouped",
-    "Conv2dWithPaddingDilationStrideStaticModule_depthwise_multiplier",
+    "Conv2dQInt8Module_not_depthwise",
     "ConvTbcModule_basic",
     "ConvTranspose2DQInt8_basic",
     "ConvolutionBackwardModule2DPadded_basic",
@@ -547,7 +545,9 @@ FX_IMPORTER_STABLEHLO_XFAIL_SET = {
     "ContainsIntList_False",
     "ContainsIntList_True",
     "Conv2dQInt8Module_basic",
+    "Conv2dQInt8Module_depthwise",
     "Conv2dQInt8Module_grouped",
+    "Conv2dQInt8Module_not_depthwise",
     "ConvTbcModule_basic",
     "ConvTranspose2DQInt8_basic",
     "ConvolutionBackwardModule2DPadded_basic",
@@ -853,8 +853,10 @@ STABLEHLO_PASS_SET = {
     "AdaptiveAvgPool2dNonUnitOutputSizeStaticModule_basic",
     "AdaptiveAvgPool2dUnitOutputSizeStaticModule_basic",
     "AdaptiveAvgPool2dOutputSizeDivisibleByInputStaticModule_basic",
+    "AdaptiveAvgPool2dFixedKernelStrideSizeStaticModule_basic",
     "AddIntModule_basic",
     "AliasModule_basic",
+    "TrueFalseOrBoolOpModule_basic",
     "AllBoolFalseModule_basic",
     "AllBoolTrueModule_basic",
     "AnyBoolFalseModule_basic",
@@ -1536,6 +1538,7 @@ TOSA_PASS_SET = {
     "AdaptiveAvgPool2dNonUnitOutputSizeStaticModule_basic",
     "AdaptiveAvgPool2dUnitOutputSizeStaticModule_basic",
     "AdaptiveAvgPool2dOutputSizeDivisibleByInputStaticModule_basic",
+    "AdaptiveAvgPool2dFixedKernelStrideSizeStaticModule_basic",
     "AddCDivModule_basic",
     "AddCDiv_Module_basic",
     "AddCMulModule_basic",
@@ -1576,6 +1579,7 @@ TOSA_PASS_SET = {
     "AtenInstanceNormModule_basic",
     "AtenToDeviceModule_basic",
     "Aten_CastFloatModule_basic",
+    "TrueFalseOrBoolOpModule_basic",
     "BaddbmmBroadcast1DInputModule_basic",
     "BaddbmmBroadcast2DInputModule_basic",
     "BaddbmmDynamicModule_basic",
@@ -1984,6 +1988,8 @@ TOSA_PASS_SET = {
     "TorchPrimLoopForLikeTensorArgModule_basic",
     "RenormModuleFloat32NegativeDim_basic",
     "RenormModuleFloat32_basic",
+    "IndexTensorStaticContiguousWithNoneModule_basic",
+    "IndexTensorStaticNonContiguousWithNoneModule_basic",
 }
 
 MAKE_FX_TOSA_PASS_SET = (
@@ -2058,6 +2064,7 @@ MAKE_FX_TOSA_PASS_SET = (
     "ViewNoChange1dModule_basic",
     "ViewNoChange2dModule_basic",
     "ViewNoChange3dModule_basic",
+    "AdaptiveAvgPool2dFixedKernelStrideSizeStaticModule_basic",
 }
 
 LTC_CRASHING_SET = {
@@ -2204,7 +2211,9 @@ LTC_XFAIL_SET = {
     "ElementwiseBitwiseAndScalarInt32Module_basic",
     "ElementwiseBitwiseAndScalarInt8Module_basic",
     "Conv2dQInt8Module_basic",
+    "Conv2dQInt8Module_depthwise",
     "Conv2dQInt8Module_grouped",
+    "Conv2dQInt8Module_not_depthwise",
     "ConvTranspose2DQInt8_basic",
 }
 
@@ -2259,6 +2268,7 @@ ONNX_XFAIL_SET = {
     "AdaptiveAvgPool2dDynamic_basic",
     "AdaptiveAvgPool2dNonUnitOutputSizeDynamicModule_basic",
     "AdaptiveAvgPool2dOutputSizeDivisibleByInputDynamicModule_basic",
+    "AdaptiveAvgPool2dFixedKernelStrideSizeStaticModule_basic",
     "AdaptiveAvgPool3dDynamicNoBatch_basic",
     "AdaptiveAvgPool3dDynamic_basic",
     "AdaptiveMaxPool1dDynamicNoBatch_basic",
@@ -2350,7 +2360,9 @@ ONNX_XFAIL_SET = {
     "Conv2dModule_basic",
     "Conv2dNoPaddingModule_basic",
     "Conv2dQInt8Module_basic",
+    "Conv2dQInt8Module_depthwise",
     "Conv2dQInt8Module_grouped",
+    "Conv2dQInt8Module_not_depthwise",
     "Conv2dWithPaddingDilationStrideModule_basic",
     "Conv2dWithPaddingModule_basic",
     "Conv3dModule_basic",
@@ -2468,6 +2480,8 @@ ONNX_XFAIL_SET = {
     "MaxPool3dLargeDatadModule_basic",
     "MaxPool3dModuleRandomSimple_basic",
     "MaxPool3dModule_basic",
+    "MaxUnpool3dModule_basic",
+    "MaxUnpool3dModulePad0_basic",
     "MeanDimEmptyDimModule_basic",
     "Mlp1LayerModule_basic",
     "Mlp2LayerModuleNoBias_basic",
@@ -2718,7 +2732,6 @@ ONNX_XFAIL_SET = {
     "BernoulliModule_basic",
     "Conv_Transpose1dModule_basic",
     "Conv_Transpose3dModule_basic",
-    "Conv2dWithPaddingDilationStrideStaticModule_depthwise_multiplier",
     "CopyWithDifferentDTypesAndSizesModule_basic",
     "CopyWithDifferentDTypesModule_basic",
     "CosineSimilarityStaticBroadcastModule_basic",
@@ -2746,6 +2759,7 @@ ONNX_XFAIL_SET = {
     "ReduceAnyFloatModule_basic",
     "ReduceMaxAlongDimUnsignedInt_basic",
     "ReduceMinAlongDimUnsignedInt_basic",
+    "UnfoldModule_basic",
 }
 
 if torch_version_for_comparison() < version.parse("2.3.0.dev"):
@@ -2922,7 +2936,9 @@ FX_IMPORTER_TOSA_XFAIL_SET = {
     "ContainsIntList_True",
     "Conv1dModule_basic",
     "Conv2dQInt8Module_basic",
+    "Conv2dQInt8Module_depthwise",
     "Conv2dQInt8Module_grouped",
+    "Conv2dQInt8Module_not_depthwise",
     "Conv2dWithPaddingDilationStrideStaticModule_grouped",
     "Conv2dWithPaddingDilationStrideStaticModule_grouped_multiplier",
     "Conv3dModule_basic",
@@ -3183,7 +3199,6 @@ FX_IMPORTER_TOSA_XFAIL_SET = {
     "IndexSelectWholeTensorModule_basic",
     "IndexTensorDyanmicInputContiguousWithNoneModule_basic",
     "IndexTensorDyanmicInputNonContiguousWithNoneModule_basic",
-    "IndexTensorHackedTwinMultiInputNonContiguousMultipleStaticDims_basic",
     "IndexTensorMultiInputContiguousCenter_basic",
     "IndexTensorMultiInputContiguousOneDimDynamic_basic",
     "IndexTensorMultiInputNonContiguousDynamic_basic",
@@ -3715,7 +3730,9 @@ ONNX_TOSA_XFAIL_SET = {
     "Conv2dModule_basic",
     "Conv2dNoPaddingModule_basic",
     "Conv2dQInt8Module_basic",
+    "Conv2dQInt8Module_depthwise",
     "Conv2dQInt8Module_grouped",
+    "Conv2dQInt8Module_not_depthwise",
     "Conv2dWithPaddingDilationStrideModule_basic",
     "Conv2dWithPaddingDilationStrideStaticModule_grouped",
     "Conv2dWithPaddingDilationStrideStaticModule_grouped_multiplier",
