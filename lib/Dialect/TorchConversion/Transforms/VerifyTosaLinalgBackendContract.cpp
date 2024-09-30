@@ -41,12 +41,19 @@ class VerifyTosaLinalgBackendContractPass
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     auto module = getOperation();
+
     TypeConverter converter;
-    converter.addConversion([](RankedTensorType type) -> Type {
-      if (BaseMemRefType::isValidElementType(type.getElementType()))
+    converter.addConversion([](Type type) -> Type {
+      auto elemTy = type;
+      if (isa<TensorType>(type))
+        elemTy = cast<TensorType>(type).getElementType();
+      if (isa<MemRefType>(type))
+        elemTy = cast<MemRefType>(type).getElementType();      
+      if (BaseMemRefType::isValidElementType(elemTy))
         return type;
       return nullptr;
     });
+    
     TypeConverter scalarConverter;
     for (TypeConverter *c : {&converter, &scalarConverter}) {
       c->addConversion([](FloatType type) { return type; });
@@ -87,8 +94,8 @@ class VerifyTosaLinalgBackendContractPass
     target.addDynamicallyLegalDialect<cf::ControlFlowDialect>(opHasLegalTypes);
     target.addDynamicallyLegalDialect<scf::SCFDialect>(opHasLegalTypes);
     target.addDynamicallyLegalDialect<ml_program::MLProgramDialect>(opHasLegalTypes);
-    target.addLegalDialect<memref::MemRefDialect>();
-    target.addLegalDialect<bufferization::BufferizationDialect>();    
+    target.addDynamicallyLegalDialect<memref::MemRefDialect>(opHasLegalTypes);
+    target.addDynamicallyLegalDialect<bufferization::BufferizationDialect>(opHasLegalTypes);
     
     // ConstantOp is used for tensors and for scalars.
     target.addDynamicallyLegalOp<arith::ConstantOp>(opHasLegalTypes);
@@ -99,7 +106,7 @@ class VerifyTosaLinalgBackendContractPass
       // We avoid `module.emitError()` so that mlir-print-op-on-diagnostics
       // doesn't unnecessarily spew out the entire module.
       emitError(module.getLoc())
-          << "Module does not conform to the linalg-on-tensors backend "
+          << "Module does not conform to the torch-backend-to-tosa-linalg backend "
              "contract. "
              "See dialect conversion legality information above.";
       return signalPassFailure();
