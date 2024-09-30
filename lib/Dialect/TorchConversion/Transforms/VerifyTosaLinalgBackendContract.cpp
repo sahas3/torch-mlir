@@ -10,12 +10,14 @@
 #include "PassDetail.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MLProgram/IR/MLProgram.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SparseTensor/IR/SparseTensor.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -39,12 +41,19 @@ class VerifyTosaLinalgBackendContractPass
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     auto module = getOperation();
+
     TypeConverter converter;
-    converter.addConversion([](RankedTensorType type) -> Type {
-      if (BaseMemRefType::isValidElementType(type.getElementType()))
+    converter.addConversion([](Type type) -> Type {
+      auto elemTy = type;
+      if (isa<TensorType>(type))
+        elemTy = cast<TensorType>(type).getElementType();
+      if (isa<MemRefType>(type))
+        elemTy = cast<MemRefType>(type).getElementType();      
+      if (BaseMemRefType::isValidElementType(elemTy))
         return type;
       return nullptr;
     });
+    
     TypeConverter scalarConverter;
     for (TypeConverter *c : {&converter, &scalarConverter}) {
       c->addConversion([](FloatType type) { return type; });
@@ -84,9 +93,10 @@ class VerifyTosaLinalgBackendContractPass
     target.addDynamicallyLegalDialect<affine::AffineDialect>(opHasLegalTypes);
     target.addDynamicallyLegalDialect<cf::ControlFlowDialect>(opHasLegalTypes);
     target.addDynamicallyLegalDialect<scf::SCFDialect>(opHasLegalTypes);
-    target.addDynamicallyLegalDialect<ml_program::MLProgramDialect>(
-        opHasLegalTypes);
-
+    target.addDynamicallyLegalDialect<ml_program::MLProgramDialect>(opHasLegalTypes);
+    target.addDynamicallyLegalDialect<memref::MemRefDialect>(opHasLegalTypes);
+    target.addDynamicallyLegalDialect<bufferization::BufferizationDialect>(opHasLegalTypes);
+    
     // ConstantOp is used for tensors and for scalars.
     target.addDynamicallyLegalOp<arith::ConstantOp>(opHasLegalTypes);
     target.addDynamicallyLegalOp<complex::CreateOp>(opHasLegalTypes);
@@ -96,7 +106,7 @@ class VerifyTosaLinalgBackendContractPass
       // We avoid `module.emitError()` so that mlir-print-op-on-diagnostics
       // doesn't unnecessarily spew out the entire module.
       emitError(module.getLoc())
-          << "Module does not conform to the linalg-on-tensors backend "
+          << "Module does not conform to the torch-backend-to-tosa-linalg backend "
              "contract. "
              "See dialect conversion legality information above.";
       return signalPassFailure();
