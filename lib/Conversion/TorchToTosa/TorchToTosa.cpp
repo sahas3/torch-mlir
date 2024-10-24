@@ -8499,6 +8499,11 @@ public:
     target.addLegalDialect<tosa::TosaDialect, tensor::TensorDialect,
                            arith::ArithDialect>();
     target.addIllegalDialect<Torch::TorchDialect>();
+<<<<<<< HEAD
+=======
+    populateTorchToTosaConversionLegalOps(target);
+    // populateTorchToTosaConversionIllegalOps(target);
+>>>>>>> 7ce44ff8 (Add xfail set for tosa_linalg pipeline.)
 
     TypeConverter typeConverter;
     typeConverter.addConversion([](Type type) { return type; });
