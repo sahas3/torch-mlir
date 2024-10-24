@@ -6801,7 +6801,7 @@ public:
                            arith::ArithDialect>();
     target.addIllegalDialect<Torch::TorchDialect>();
     populateTorchToTosaConversionLegalOps(target);
-    populateTorchToTosaConversionIllegalOps(target);
+    // populateTorchToTosaConversionIllegalOps(target);
 
     TypeConverter typeConverter;
     typeConverter.addConversion([](Type type) { return type; });
@@ -6898,7 +6898,7 @@ void torch::populateTorchToTosaConversionPatterns(TypeConverter &typeConverter,
   INSERT_BINARY_PATTERN(AtenMinimumOp, tosa::MinimumOp)
   INSERT_BINARY_PATTERN(AtenLogicalOrOp, tosa::LogicalOrOp)
   INSERT_BINARY_PATTERN(AtenLogicalXorOp, tosa::LogicalXorOp)
-    INSERT_BINARY_PATTERN(AtenLogicalAndOp, tosa::LogicalAndOp)
+  INSERT_BINARY_PATTERN(AtenLogicalAndOp, tosa::LogicalAndOp)
   INSERT_BINARY_PATTERN(AtenBitwiseLeftShiftTensorOp, tosa::LogicalLeftShiftOp)
   INSERT_BINARY_PATTERN(AtenBitwiseRightShiftTensorOp,
                         tosa::ArithmeticRightShiftOp)
@@ -7112,8 +7112,8 @@ void torch::populateTorchToTosaConversionPatterns(TypeConverter &typeConverter,
   INSERT_ATENOP_PATTERN(AtenScatterSrcOp);
   INSERT_ATENOP_PATTERN(AtenSliceScatterOp);
   INSERT_ATENOP_PATTERN(AtenDiagEmbedOp);
-    INSERT_ATENOP_PATTERN(AtenUniformOp);
-    INSERT_ATENOP_PATTERN(AtenThresholdBackwardOp);
+  INSERT_ATENOP_PATTERN(AtenUniformOp);
+  INSERT_ATENOP_PATTERN(AtenThresholdBackwardOp);
 #undef INSERT_ATENOP_PATTERN
 
 #define INSERT_CLONE_ATENOP_PATTERN(AtenOp)                                    \
