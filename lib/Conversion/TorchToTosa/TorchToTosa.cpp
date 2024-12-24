@@ -1209,6 +1209,12 @@ public:
     auto newOutputTy = RankedTensorType::get(
         makeShapeLLVMCompatible(newOutputShape), resultElemTy);
 
+    if (newOutputTy.getNumDynamicDims() > 1) {
+      return rewriter.notifyMatchFailure(
+          op, "Squeeze op resulting in multiple dynamic dimensions in the "
+              "output is not supported.");
+    }
+
     auto reshapeOp = rewriter.create<tosa::ReshapeOp>(
         op->getLoc(),
         OpConversionPattern<AtenOpT>::getTypeConverter()->convertType(
@@ -3032,6 +3038,12 @@ LogicalResult ConvertAtenOp<AtenUnsqueezeOp>::matchAndRewrite(
         op, "Only tensor types are currently supported");
   }
 
+  if (selfType.getNumDynamicDims() > 1) {
+    return rewriter.notifyMatchFailure(
+        op,
+        "AtenUnsqueezeOp with multiple dynamic dimensions is not supported.");
+  }
+
   auto selfRank = selfType.getRank();
   auto selfElemTy = selfType.getElementType();
   if (!selfElemTy.isIntOrFloat()) {
@@ -3728,6 +3740,11 @@ public:
     }
 
     if (argMaxOp.getType() != indicesType) {
+      if (indicesType.getNumDynamicDims() > 1) {
+        return rewriter.notifyMatchFailure(
+            op, "AtenMaxDimOp resulting in multiple dynamic dimensions in the "
+                "output is not supported.");
+      }
       argMaxOp = rewriter.create<tosa::ReshapeOp>(
           op->getLoc(), indicesType, argMaxOp,
           rewriter.getDenseI64ArrayAttr(reducedShape));
