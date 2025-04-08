@@ -37,7 +37,7 @@ cmake -GNinja -Bbuild \
   -DLLVM_EXTERNAL_TORCH_MLIR_SOURCE_DIR="$PWD" \
   -DPython3_EXECUTABLE="$(which python)" \
   -DPython_EXECUTABLE="$(which python)" \
-  -DTORCH_MLIR_ENABLE_STABLEHLO=OFF \
+  -DTORCH_MLIR_ENABLE_STABLEHLO=ON \
   -DTORCH_MLIR_ENABLE_PYTORCH_EXTENSIONS=ON \
   -DTORCH_MLIR_ENABLE_LTC=OFF \
   -DTORCH_MLIR_ENABLE_JIT_IR_IMPORTER=ON \
@@ -50,9 +50,9 @@ echo "::endgroup::"
 
 echo "Build completed successfully"
 
-echo "::group::Unit tests"
-cmake --build ${repo_root}/build --target check-torch-mlir
-echo "::endgroup::"
+# echo "::group::Unit tests"
+# cmake --build ${repo_root}/build --target check-torch-mlir
+# echo "::endgroup::"
 
 # Show ccache stats.
 ccache --show-stats

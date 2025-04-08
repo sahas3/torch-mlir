@@ -99,6 +99,7 @@ class CustomBuild(_build):
         self.build_base = "setup_build"
 
     def run(self):
+        breakpoint()
         self.run_command("build_py")
         self.run_command("build_ext")
         self.run_command("build_scripts")
@@ -160,6 +161,7 @@ class CMakeBuild(build_py):
             print(f"cmake workspace: {cmake_build_dir}")
 
     def run(self):
+        breakpoint()
         target_dir = self.build_lib
         cmake_build_dir = TORCH_MLIR_CMAKE_BUILD_DIR
         if not cmake_build_dir:
@@ -197,7 +199,12 @@ class CMakeBuild(build_py):
         if os.path.exists(target_dir):
             shutil.rmtree(target_dir, ignore_errors=False, onerror=None)
 
-        shutil.copytree(python_package_dir, target_dir, symlinks=False)
+        shutil.copytree(
+            python_package_dir,
+            target_dir,
+            symlinks=False,
+            ignore_dangling_symlinks=True,
+        )
 
         torch_mlir_opt_src = os.path.join(cmake_build_dir, "bin", "torch-mlir-opt")
         torch_mlir_opt_dst = os.path.join(

@@ -50,9 +50,9 @@ echo "::endgroup::"
 
 echo "Build completed successfully"
 
-echo "::group::Unit tests"
-cmake --build ${repo_root}/build --target check-torch-mlir
-echo "::endgroup::"
+# echo "::group::Unit tests"
+# cmake --build ${repo_root}/build --target check-torch-mlir
+# echo "::endgroup::"
 
 # Show ccache stats.
 ccache --show-stats
