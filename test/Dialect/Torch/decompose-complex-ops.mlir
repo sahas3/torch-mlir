@@ -159,21 +159,15 @@ func.func @torch.aten.fmod_int(%arg0: !torch.vtensor<[?],si32>, %arg1: !torch.vt
 
 // CHECK:   func.func @torch.aten.fmod_float(%[[ARG0:.+]]: !torch.vtensor<[?],f16>, %[[ARG1:.+]]: !torch.vtensor<[1],f16>) -> !torch.vtensor<[?],f16> {
 // CHECK:     %[[FLOAT1:.+]] = torch.constant.float 1.000000e+00
-// CHECK:     %[[V0:.+]] = torch.vtensor.literal(dense<-1> : tensor<si64>) : !torch.vtensor<[],si64>
-// CHECK:     %[[V1:.+]] = torch.vtensor.literal(dense<0> : tensor<si64>) : !torch.vtensor<[],si64>
-// CHECK:     %[[NONE:.+]] = torch.constant.none
-// CHECK:     %[[FALSE:.+]] = torch.constant.bool false
-// CHECK:     %[[INT5:.+]] = torch.constant.int 5
-// CHECK:     %[[V2:.+]] = torch.vtensor.literal(dense<1> : tensor<si64>) : !torch.vtensor<[],si64>
+// CHECK:     %[[V0:.+]] = torch.vtensor.literal(dense<-1.0{{.*}}> : tensor<f16>) : !torch.vtensor<[],f16>
+// CHECK:     %[[V1:.+]] = torch.vtensor.literal(dense<0.0{{.*}}> : tensor<f16>) : !torch.vtensor<[],f16>
+// CHECK:     %[[V2:.+]] = torch.vtensor.literal(dense<1.0{{.*}}> : tensor<f16>) : !torch.vtensor<[],f16>
 // CHECK:     %[[INT0:.+]] = torch.constant.int 0
 // CHECK:     %[[V3:.+]] = torch.aten.div.Tensor %[[ARG0]], %[[ARG1]] : !torch.vtensor<[?],f16>, !torch.vtensor<[1],f16> -> !torch.vtensor<[?],f16>
 // CHECK:     %[[V4:.+]] = torch.aten.gt.Scalar %[[V3]], %[[INT0]] : !torch.vtensor<[?],f16>, !torch.int -> !torch.vtensor<[?],i1>
 // CHECK:     %[[V5:.+]] = torch.aten.lt.Scalar %[[V3]], %[[INT0]] : !torch.vtensor<[?],f16>, !torch.int -> !torch.vtensor<[?],i1>
-// CHECK:     %[[V6:.+]] = torch.aten.to.dtype %[[V2]], %[[INT5]], %[[FALSE]], %[[FALSE]], %[[NONE]] : !torch.vtensor<[],si64>, !torch.int, !torch.bool, !torch.bool, !torch.none -> !torch.vtensor<[],f16>
-// CHECK:     %[[V7:.+]] = torch.aten.to.dtype %[[V1]], %[[INT5]], %[[FALSE]], %[[FALSE]], %[[NONE]] : !torch.vtensor<[],si64>, !torch.int, !torch.bool, !torch.bool, !torch.none -> !torch.vtensor<[],f16>
-// CHECK:     %[[V8:.+]] = torch.aten.where.self %[[V4]], %[[V6]], %[[V7]] : !torch.vtensor<[?],i1>, !torch.vtensor<[],f16>, !torch.vtensor<[],f16> -> !torch.vtensor<[?],f16>
-// CHECK:     %[[V9:.+]] = torch.aten.to.dtype %[[V0]], %[[INT5]], %[[FALSE]], %[[FALSE]], %[[NONE]] : !torch.vtensor<[],si64>, !torch.int, !torch.bool, !torch.bool, !torch.none -> !torch.vtensor<[],f16>
-// CHECK:     %[[V10:.+]] = torch.aten.where.self %[[V5]], %[[V9]], %[[V8]] : !torch.vtensor<[?],i1>, !torch.vtensor<[],f16>, !torch.vtensor<[?],f16> -> !torch.vtensor<[?],f16>
+// CHECK:     %[[V8:.+]] = torch.aten.where.self %[[V4]], %[[V2]], %[[V1]] : !torch.vtensor<[?],i1>, !torch.vtensor<[],f16>, !torch.vtensor<[],f16> -> !torch.vtensor<[?],f16>
+// CHECK:     %[[V10:.+]] = torch.aten.where.self %[[V5]], %[[V0]], %[[V8]] : !torch.vtensor<[?],i1>, !torch.vtensor<[],f16>, !torch.vtensor<[?],f16> -> !torch.vtensor<[?],f16>
 // CHECK:     %[[V11:.+]] = torch.aten.abs %[[V3]] : !torch.vtensor<[?],f16> -> !torch.vtensor<[?],f16>
 // CHECK:     %[[V12:.+]] = torch.aten.floor %[[V11]] : !torch.vtensor<[?],f16> -> !torch.vtensor<[?],f16>
 // CHECK:     %[[V13:.+]] = torch.aten.mul.Tensor %[[V10]], %[[V12]] : !torch.vtensor<[?],f16>, !torch.vtensor<[?],f16> -> !torch.vtensor<[?],f16>
@@ -845,4 +839,98 @@ func.func @native_layer_norm(%input: !torch.vtensor<[1,56,56,96],f32>, %normaliz
 func.func @native_layer_norm_mixed_dtypes(%input: !torch.vtensor<[1,56,56,96],bf16>, %normalized_shape: !torch.list<int>, %weight: !torch.vtensor<[96],bf16>, %bias: !torch.vtensor<[96],bf16>, %eps: !torch.float) -> (!torch.vtensor<[1,56,56,96],bf16>, !torch.vtensor<[1,56,56,1],f32>, !torch.vtensor<[1,56,56,1],f32>) {
   %result, %mean, %rstd = torch.aten.native_layer_norm %input, %normalized_shape, %weight, %bias, %eps : !torch.vtensor<[1,56,56,96],bf16>, !torch.list<int>, !torch.vtensor<[96],bf16>, !torch.vtensor<[96],bf16>, !torch.float -> !torch.vtensor<[1,56,56,96],bf16>, !torch.vtensor<[1,56,56,1],f32>, !torch.vtensor<[1,56,56,1],f32>
   return %result, %mean, %rstd : !torch.vtensor<[1,56,56,96],bf16>, !torch.vtensor<[1,56,56,1],f32>, !torch.vtensor<[1,56,56,1],f32>
+}
+
+// -----
+
+
+// CHECK-LABEL: func @pixel_unshuffle_static
+// CHECK-DAG: %[[C2:.*]] = torch.constant.int 2
+// CHECK-DAG: %[[C0:.*]] = torch.constant.int 0
+// CHECK-DAG: %[[C1:.*]] = torch.constant.int 1
+// CHECK-DAG: %[[C3:.*]] = torch.constant.int 3
+// CHECK-DAG: %[[C4:.*]] = torch.constant.int 4
+// CHECK-DAG: %[[C5:.*]] = torch.constant.int 5
+// CHECK: %[[PERMLIST:.*]] = torch.prim.ListConstruct  %[[C0]], %[[C1]], %[[C3]], %[[C5]], %[[C2]], %[[C4]] : (!torch.int, !torch.int, !torch.int, !torch.int, !torch.int, !torch.int) -> !torch.list<int>
+// CHECK: %[[EXPAND1:.*]] = torch.prims.split_dim %[[ARG0]], %[[C2]], %[[C2]] : !torch.vtensor<[1,8,4,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[1,8,2,2,4],f32>
+// CHECK: %[[EXPAND2:.*]] = torch.prims.split_dim %[[EXPAND1]], %[[C4]], %[[C2]] : !torch.vtensor<[1,8,2,2,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[1,8,2,2,2,2],f32>
+// CHECK: %[[PERMUTE:.*]] = torch.aten.permute %[[EXPAND2]], %[[PERMLIST]] : !torch.vtensor<[1,8,2,2,2,2],f32>, !torch.list<int> -> !torch.vtensor<[1,8,2,2,2,2],f32>
+// CHECK: %[[COLLAPSE:.*]] = torch.prims.collapse %[[PERMUTE]], %[[C1]], %[[C3]] : !torch.vtensor<[1,8,2,2,2,2],f32>, !torch.int, !torch.int -> !torch.vtensor<[1,32,2,2],f32>
+// CHECK: return %[[COLLAPSE]] : !torch.vtensor<[1,32,2,2],f32>
+func.func @pixel_unshuffle_static(%arg0: !torch.vtensor<[1,8,4,4],f32>) -> !torch.vtensor<[1,32,2,2],f32> attributes {torch.assume_strict_symbolic_shapes} {
+  %int2 = torch.constant.int 2
+  %0 = torch.aten.pixel_unshuffle %arg0, %int2 : !torch.vtensor<[1,8,4,4],f32>, !torch.int -> !torch.vtensor<[1,32,2,2],f32>
+  return %0 : !torch.vtensor<[1,32,2,2],f32>
+}
+
+
+// -----
+
+
+// CHECK-LABEL: func @pixel_unshuffle_fulldynamic
+// CHECK-DAG: %[[C2:.*]] = torch.constant.int 2
+// CHECK-DAG: %[[C0:.*]] = torch.constant.int 0
+// CHECK-DAG: %[[C1:.*]] = torch.constant.int 1
+// CHECK-DAG: %[[C3:.*]] = torch.constant.int 3
+// CHECK-DAG: %[[C4:.*]] = torch.constant.int 4
+// CHECK-DAG: %[[C5:.*]] = torch.constant.int 5
+// CHECK: %[[INC:.*]] = torch.aten.size.int %[[ARG0]], %[[C1]] : !torch.vtensor<[?,?,?,?],f32>, !torch.int -> !torch.int
+// CHECK: %[[INH:.*]] = torch.aten.size.int %[[ARG0]], %[[C2]] : !torch.vtensor<[?,?,?,?],f32>, !torch.int -> !torch.int
+// CHECK: %[[INW:.*]] = torch.aten.size.int %[[ARG0]], %[[C3]] : !torch.vtensor<[?,?,?,?],f32>, !torch.int -> !torch.int
+// CHECK: %[[OUTC:.*]] = torch.aten.mul.int %[[INC]], %[[C4]] : !torch.int, !torch.int -> !torch.int
+// CHECK: %[[OUTH:.*]] = torch.aten.floordiv.int %[[INH]], %[[C2]] : !torch.int, !torch.int -> !torch.int
+// CHECK: %[[OUTW:.*]] = torch.aten.floordiv.int %[[INW]], %[[C2]] : !torch.int, !torch.int -> !torch.int
+// CHECK: %[[SIZE0:.*]] = torch.aten.size.int %[[ARG0]], %[[C0]] : !torch.vtensor<[?,?,?,?],f32>, !torch.int -> !torch.int
+// CHECK: %[[PERMLIST:.*]] = torch.prim.ListConstruct  %[[C0]], %[[C1]], %[[C3]], %[[C5]], %[[C2]], %[[C4]] : (!torch.int, !torch.int, !torch.int, !torch.int, !torch.int, !torch.int) -> !torch.list<int>
+// CHECK: %[[EXPAND1:.*]] = torch.prims.split_dim %[[ARG0]], %[[C2]], %[[OUTH]] : !torch.vtensor<[?,?,?,?],f32>, !torch.int, !torch.int -> !torch.vtensor<[?,?,?,2,?],f32>
+// CHECK: %[[EXPAND2:.*]] = torch.prims.split_dim %[[EXPAND1]], %[[C4]], %[[OUTW]] : !torch.vtensor<[?,?,?,2,?],f32>, !torch.int, !torch.int -> !torch.vtensor<[?,?,?,2,?,2],f32>
+// CHECK: %[[PERMUTE:.*]] = torch.aten.permute %[[EXPAND2]], %[[PERMLIST]] : !torch.vtensor<[?,?,?,2,?,2],f32>, !torch.list<int> -> !torch.vtensor<[?,?,2,2,?,?],f32>
+// CHECK: %[[COLLAPSE:.*]] = torch.prims.collapse %[[PERMUTE]], %[[C1]], %[[C3]] : !torch.vtensor<[?,?,2,2,?,?],f32>, !torch.int, !torch.int -> !torch.vtensor<[?,?,?,?],f32>
+// CHECK: return %[[COLLAPSE]] : !torch.vtensor<[?,?,?,?],f32>
+func.func @pixel_unshuffle_fulldynamic(%arg0: !torch.vtensor<[?,?,?,?],f32>) -> !torch.vtensor<[?,?,?,?],f32> attributes {torch.assume_strict_symbolic_shapes} {
+	%int2 = torch.constant.int 2
+	%0 = torch.aten.pixel_unshuffle %arg0, %int2 : !torch.vtensor<[?,?,?,?],f32>, !torch.int -> !torch.vtensor<[?,?,?,?],f32>
+	return %0 : !torch.vtensor<[?,?,?,?],f32>
+}
+
+
+// -----
+
+
+// CHECK-LABEL: func.func @torch.aten.broadcast_tensors
+// CHECK-SAME: (%[[ARG0:.*]]: !torch.vtensor<[1,3],f32>
+// CHECK-SAME: %[[ARG1:.*]]: !torch.vtensor<[2,1],f32>
+// CHECK-DAG: %[[INT2:.*]] = torch.constant.int 2
+// CHECK-DAG: %[[INT3:.*]] = torch.constant.int 3
+// CHECK-DAG: %[[TRUE:.*]] = torch.constant.bool true
+// CHECK: torch.runtime.assert %[[TRUE]], "tensors are not broadcast compatible"
+// CHECK: torch.runtime.assert %[[TRUE]], "tensors are not broadcast compatible"
+// CHECK: %[[SHAPE:.*]] = torch.prim.ListConstruct %[[INT2]], %[[INT3]] : (!torch.int, !torch.int) -> !torch.list<int>
+// CHECK: %[[B0:.*]] = torch.aten.broadcast_to %[[ARG0]], %[[SHAPE]] : !torch.vtensor<[1,3],f32>, !torch.list<int> -> !torch.vtensor<[2,3],f32>
+// CHECK: %[[B1:.*]] = torch.aten.broadcast_to %[[ARG1]], %[[SHAPE]] : !torch.vtensor<[2,1],f32>, !torch.list<int> -> !torch.vtensor<[2,3],f32>
+// CHECK: %[[LIST:.*]] = torch.prim.ListConstruct %[[B0]], %[[B1]] : (!torch.vtensor<[2,3],f32>, !torch.vtensor<[2,3],f32>) -> !torch.list<vtensor<[2,3],f32>>
+// CHECK: return %[[LIST]] : !torch.list<vtensor<[2,3],f32>>
+func.func @torch.aten.broadcast_tensors(%arg0: !torch.vtensor<[1,3],f32>, %arg1: !torch.vtensor<[2,1],f32>) -> !torch.list<vtensor<[2,3], f32>>  {
+  %0 = torch.prim.ListConstruct %arg0, %arg1 : (!torch.vtensor<[1,3],f32>, !torch.vtensor<[2,1],f32>) -> !torch.list<vtensor>
+  %1 = torch.aten.broadcast_tensors %0 : !torch.list<vtensor> -> !torch.list<vtensor<[2,3],f32>>
+  return %1 : !torch.list<vtensor<[2,3],f32>>
+}
+
+// -----
+
+// CHECK-LABEL: func @channel_shuffle
+func.func @channel_shuffle(%arg0: !torch.vtensor<[1,8,4,4],f32>) -> !torch.vtensor<[1,8,4,4],f32> attributes {torch.assume_strict_symbolic_shapes} {
+  %int4 = torch.constant.int 4
+  // CHECK-DAG: %[[C2:.*]] = torch.constant.int 2
+  // CHECK-DAG: %[[C0:.*]] = torch.constant.int 0
+  // CHECK-DAG: %[[C1:.*]] = torch.constant.int 1
+  // CHECK-DAG: %[[C3:.*]] = torch.constant.int 3
+  // CHECK-DAG: %[[C4:.*]] = torch.constant.int 4
+  // CHECK: %[[PERMLIST:.*]] = torch.prim.ListConstruct  %[[C0]], %[[C2]], %[[C1]], %[[C3]], %[[C4]] : (!torch.int, !torch.int, !torch.int, !torch.int, !torch.int) -> !torch.list<int>
+  // CHECK: %[[EXPAND:.*]] = torch.prims.split_dim %[[ARG0]], %[[C1]], %[[C2]] : !torch.vtensor<[1,8,4,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[1,4,2,4,4],f32>
+  // CHECK: %[[PERMUTE:.*]] = torch.aten.permute %[[EXPAND]], %[[PERMLIST]] : !torch.vtensor<[1,4,2,4,4],f32>, !torch.list<int> -> !torch.vtensor<[1,2,4,4,4],f32>
+  // CHECK: %[[COLLAPSE:.*]] = torch.prims.collapse %[[PERMUTE]], %[[C1]], %[[C2]] : !torch.vtensor<[1,2,4,4,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[1,8,4,4],f32>
+  // CHECK: return %[[COLLAPSE]] : !torch.vtensor<[1,8,4,4],f32>
+  %0 = torch.aten.channel_shuffle %arg0, %int4 : !torch.vtensor<[1,8,4,4],f32>, !torch.int -> !torch.vtensor<[1,8,4,4],f32>
+  return %0 : !torch.vtensor<[1,8,4,4],f32>
 }

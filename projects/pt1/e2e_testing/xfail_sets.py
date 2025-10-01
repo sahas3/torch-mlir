@@ -415,7 +415,6 @@ FX_IMPORTER_XFAIL_SET = {
     "AtenNonzero1DDynamicModule_basic",  # no lowering for torch.aten.sym_constrain_range_for_size
     "Aten_TrilinearModuleVaryingRanks_basic",
     "Aten_TrilinearModuleZerodDimBug_basic",
-    "AvgPool2dCHWModule_basic",
     "QuantizedReluInt32_basic",
     "QuantizedReluInt8_basic",
     "QuantizedReluUint8_basic",
@@ -488,22 +487,9 @@ FX_IMPORTER_XFAIL_SET = {
     "ViewSizeFromOtherTensor_basic",
     "ViewDtypeStaticModule_basic",
     "WeightNormInterfaceModule_basic",
-    # Error: `aten.as_strided` op is not supported
-    "ChunkListUnpackDynamic_Module_basic",
-    "ChunkListUnpackUnevenDynamic_Module_basic",
-    "ChunkListUnpackUneven_Module_basic",
-    "ChunkListUnpack_Module_basic",
-    "SplitTensorGetItem_Module_basic",
-    "SplitTensorLastSmallerModule_basic",
-    "SplitTensorListUnpackModule_basic",
-    "SplitTensorNegativeDimModule_basic",
-    "SplitWithSizesListUnpackModule_basic",
-    "SplitWithSizes_Module_basic",
-    "AsStridedWithOffsetModule_basic",
     "AdaptiveAvgPool1dGeneralDynamic_basic",
     "AdaptiveAvgPool1dStaticEvenMultiple_basic",
     "AdaptiveAvgPool1dStaticLargerOutput_basic",
-    "AdaptiveAvgPool2dDynamicNoBatch_basic",
     "AdaptiveAvgPool2dDynamic_basic",
     "AdaptiveMaxPool1dDynamicNoBatch_basic",
     "AdaptiveMaxPool1dDynamic_basic",
@@ -529,8 +515,11 @@ FX_IMPORTER_XFAIL_SET = {
     "ReflectionPad3dModuleRight_basic",
     "ReflectionPad3dModuleFront_basic",
     "ReflectionPad3dModuleBack_basic",
-    # RuntimeError: Unknown function SliceOutOfLowerBoundEndIndexModule
-    "NativeGroupNormModule_basic",
+    # error: argument must be a memref of f32, f64, i32, i64, i8, i1, c32, c64, but got 'memref<3x5xbf16>'
+    "ElementwiseClampMaxModule_bfloat16",
+    "ElementwiseClampMinModule_bfloat16",
+    "ElementwiseClampModule_bfloat16",
+    "ElementwiseReluModule_bfloat16",
 }
 
 FX_IMPORTER_CRASHING_SET = LINALG_CRASHING_SET | {
@@ -546,6 +535,8 @@ FX_IMPORTER_CRASHING_SET = LINALG_CRASHING_SET | {
     "AvgPool2dSingleIntTupleParamsModule_basic",
     "SliceOutOfLowerBoundEndIndexModule_basic",
     "RollModule_basic",
+    "AdaptiveAvgPool2dDynamicNoBatch_basic",
+    "AvgPool2dCHWModule_basic",
 }
 
 FX_IMPORTER_STABLEHLO_XFAIL_SET = {
@@ -576,6 +567,8 @@ FX_IMPORTER_STABLEHLO_XFAIL_SET = {
     "MaxPool1dStaticCeilModeTrueModule_basic",
     "MaxUnpool3dModulePad0_basic",
     "MaxUnpool3dModule_basic",
+    "MaxUnpool2dModule_basic",
+    "MaxUnpool2dModule_3dInput_basic",
     "MultinomialModule2D_F32",
     "MultinomialModule2D_basic",
     "MultinomialModule_basic",
@@ -682,6 +675,10 @@ FX_IMPORTER_STABLEHLO_XFAIL_SET = {
     "BoolIntTrueModule_basic",
     "BroadcastDynamicDimModule_basic",
     "CeilFloatModule_basic",
+    "ChannelShuffleBasic_basic",
+    "ChannelShuffleUnitaryGroup_basic",
+    "ChannelShuffleTrailingOnes_basic",
+    "ChannelShuffleDynamicDims_basic",
     "ConstantBoolParameterModule_basic",
     "ContainsIntList_False",
     "ContainsIntList_True",
@@ -837,10 +834,6 @@ FX_IMPORTER_STABLEHLO_XFAIL_SET = {
     "RandnLikeDtypeModule_basic",
     "RandnLikeModule_basic",
     "RandnModule_basic",
-    "ReflectionPad1dModule2dInput_Right",
-    "ReflectionPad1dModule2dInput_basic",
-    "ReflectionPad1dModule3dInput_Left",
-    "ReflectionPad1dModule3dInput_basic",
     "ReflectionPad2dModule_Bottom",
     "ReflectionPad2dModule_Left",
     "ReflectionPad2dModule_Right",
@@ -860,6 +853,8 @@ FX_IMPORTER_STABLEHLO_XFAIL_SET = {
     "ReplicationPad2dModule_left0",
     "ReplicationPad2dModule_right0",
     "ReplicationPad2dModule_top0",
+    "ReplicationPad3dModule_basic",
+    "ReplicationPad3dModuleSingleIntPad_basic",
     "ScalarImplicitFloatModule_basic",
     # REMOVE WHEN ENABLE_GQA IS ADDED
     "ScatterAddDynamicModule_basic",
@@ -988,6 +983,14 @@ FX_IMPORTER_STABLEHLO_XFAIL_SET = {
     "NativeGroupNormModule_basic",
     "AvgPool2dCeilModeFullDimIndivisibleByStrideModule_basic",
     "MaxPool2dCeilModeFullDimIndivisibleByStrideModule_basic",
+    "AtenAsStridedModule_basic",
+    "AtenAsStridedNoStorageOffsetModule_basic",
+    "AtenAsStridedUnknownSizeModule_basic",
+    # error: argument must be a memref of f32, f64, i32, i64, i8, i1, c32, c64, but got 'memref<3x5xbf16>'
+    "ElementwiseClampMaxModule_bfloat16",
+    "ElementwiseClampMinModule_bfloat16",
+    "ElementwiseClampModule_bfloat16",
+    "ElementwiseReluModule_bfloat16",
 }
 
 FX_IMPORTER_STABLEHLO_CRASHING_SET = {
@@ -1769,6 +1772,8 @@ FX_IMPORTER_TOSA_CRASHING_SET = {
     #     raise TimeoutError(self.error_message)
     # TimeoutError: Timeout
     "BertModule_basic",
+    "UInt8Tensor_basic",
+    "BoolTensor_basic",
 }
 
 # Write the TOSA set as a "passing" set as it is very early in development
@@ -1812,6 +1817,12 @@ TOSA_PASS_SET = {
     "L1LossSumReductionModule_basic",
     "PixelShuffleModuleStaticRank3Int64_basic",
     "PixelShuffleModuleStaticRank4Float32_basic",
+    "ChannelShuffleBasic_basic",
+    "ChannelShuffleUnitaryGroup_basic",
+    "ChannelShuffle1D_basic",
+    "ChannelShuffle4D_basic",
+    "ChannelShuffleTrailingOnes_basic",
+    "ChannelShuffleDynamicDims_basic",
     "RandIntLowModule_basic",
     "RandIntModule_basic",
     "RandIntPinMemoryModule_basic",
@@ -2574,6 +2585,12 @@ LTC_XFAIL_SET = {
     "PixelShuffleModuleFullDynamic_basic",
     "PixelShuffleModuleSpatiallyDynamic_basic",
     "PixelShuffleModuleSpatiallyStatic_basic",
+    "ChannelShuffleBasic_basic",
+    "ChannelShuffleUnitaryGroup_basic",
+    "ChannelShuffle1D_basic",
+    "ChannelShuffle4D_basic",
+    "ChannelShuffleTrailingOnes_basic",
+    "ChannelShuffleDynamicDims_basic",
     "ConvTbcModule_basic",
     "_Convolution2DAllFalseModule_basic",
     "_Convolution2DBenchmarkModule_basic",
@@ -3054,6 +3071,8 @@ ONNX_XFAIL_SET = {
     "MaxPool3dWithIndicesNonDefaultStrideModule_basic",
     "MaxUnpool3dModule_basic",
     "MaxUnpool3dModulePad0_basic",
+    "MaxUnpool2dModule_basic",
+    "MaxUnpool2dModule_3dInput_basic",
     "MeanDimEmptyDimModule_basic",
     "Mlp1LayerModule_basic",
     "Mlp2LayerModuleNoBias_basic",
@@ -3123,6 +3142,17 @@ ONNX_XFAIL_SET = {
     "PixelShuffleModuleSpatiallyDynamic_basic",
     "PixelShuffleModuleSpatiallyStatic_basic",
     "PixelShuffleModuleStaticRank3Int64_basic",
+    "PixelUnshuffleModuleStaticRank5Float32_basic",
+    "PixelUnshuffleModuleStaticRank3Int64_basic",
+    "PixelUnshuffleModuleFullDynamic_basic",
+    "PixelUnshuffleModuleSpatiallyDynamic_basic",
+    "PixelUnshuffleModuleSpatiallyStatic_basic",
+    "ChannelShuffleBasic_basic",
+    "ChannelShuffleUnitaryGroup_basic",
+    "ChannelShuffle1D_basic",
+    "ChannelShuffle4D_basic",
+    "ChannelShuffleTrailingOnes_basic",
+    "ChannelShuffleDynamicDims_basic",
     "PowIntIntModule_basic",
     "PrimMaxIntModule_basic",
     "PrimMinIntDynamicModule_basic",
@@ -3393,6 +3423,11 @@ ONNX_XFAIL_SET = {
     # RuntimeError: Given input size: (1x1x1). Calculated output size: (1x0x0). Output size is too small
     "AvgPool2dWithoutPadFullDimIndivisibleByStrideModule_basic",
     "MaxPool2dWithoutPadFullDimIndivisibleByStrideModule_basic",
+    # error: argument must be a memref of f32, f64, i32, i64, i8, i1, c32, c64, but got 'memref<?x?xbf16>'
+    "ElementwiseClampMaxModule_bfloat16",
+    "ElementwiseClampMinModule_bfloat16",
+    "ElementwiseClampModule_bfloat16",
+    "ElementwiseReluModule_bfloat16",
 }
 
 if torch_version_for_comparison() < version.parse("2.3.0.dev"):
@@ -3417,7 +3452,9 @@ if torch_version_for_comparison() < version.parse("2.4.0.dev"):
         "ElementwiseBitwiseAndStaticShapeModule_basic",
     }
 
-if torch_version_for_comparison() >= version.parse("2.5.0.dev"):
+if torch_version_for_comparison() >= version.parse(
+    "2.5.0.dev"
+) and torch_version_for_comparison() < version.parse("2.9.0.dev"):
     ONNX_XFAIL_SET = ONNX_XFAIL_SET | {
         # ERROR: value (Tensor with shape=[2, 3, 8, 20], dtype=torch.float32, min=+nan, max=+nan, mean=+nan) is not close to golden value (Tensor with shape=[2, 3, 8, 20], dtype=torch.float32, min=-2.394, max=+2.454, mean=-0.02828)
         "ScaledDotProductAttentionBoolMaskModule_basic",
@@ -3472,6 +3509,7 @@ ONNX_CRASHING_SET = LINALG_CRASHING_SET | {
     "StdCorrectionEmptyDimModule_basic",
     "VarCorrectionEmptyDimModule_basic",
     "VarDimEmptyDimModule_basic",
+    "BroadcastTensorsModule_basic",
     # Runtime op verification: rank mismatch in memref.cast
     "ViewSizeFromOtherTensor_basic",
     "SliceOutOfLowerBoundEndIndexModule_basic",
@@ -3551,6 +3589,8 @@ FX_IMPORTER_TOSA_XFAIL_SET = {
     "MaskedScatterStaticBasic_basic",
     "MaxUnpool3dModulePad0_basic",
     "MaxUnpool3dModule_basic",
+    "MaxUnpool2dModule_basic",
+    "MaxUnpool2dModule_3dInput_basic",
     "MultinomialModule2D_F32",
     "MultinomialModule2D_basic",
     "MultinomialModule_basic",
@@ -3957,6 +3997,27 @@ FX_IMPORTER_TOSA_XFAIL_SET = {
     "UnsafeIndexPutHackedTwin1DFloatNonAccumulateModule_basic",
     "ReplicationPad1dModule_2DInput_basic",
     "ReplicationPad1dModule_3DInput_basic",
+    "ReplicationPad3dModule_basic",
+    "ReplicationPad3dModuleSingleIntPad_basic",
+    "AtenAsStridedModule_basic",
+    "AtenAsStridedNoStorageOffsetModule_basic",
+    "AtenAsStridedUnknownSizeModule_basic",
+    "ChunkListUnpackDynamic_Module_basic",
+    "ChunkListUnpackUnevenDynamic_Module_basic",
+    "ChunkListUnpackUneven_Module_basic",
+    "ChunkListUnpack_Module_basic",
+    "NativeGroupNormModule_basic",
+    "SplitTensorGetItem_Module_basic",
+    "SplitTensorLastSmallerModule_basic",
+    "SplitTensorListUnpackModule_basic",
+    "SplitTensorNegativeDimModule_basic",
+    "SplitWithSizesListUnpackModule_basic",
+    "SplitWithSizes_Module_basic",
+    # error: argument must be a memref of f32, f64, i32, i64, i8, i1, c32, c64, but got 'memref<3x5xbf16>'
+    "ElementwiseClampMaxModule_bfloat16",
+    "ElementwiseClampMinModule_bfloat16",
+    "ElementwiseClampModule_bfloat16",
+    "ElementwiseReluModule_bfloat16",
 }
 
 ONNX_TOSA_CRASHING_SET = {
@@ -4087,6 +4148,8 @@ ONNX_TOSA_XFAIL_SET = {
     "MaskedScatterStaticBasic_basic",
     "MaxUnpool3dModulePad0_basic",
     "MaxUnpool3dModule_basic",
+    "MaxUnpool2dModule_basic",
+    "MaxUnpool2dModule_3dInput_basic",
     "MultinomialModule2D_F32",
     "MultinomialModule2D_basic",
     "MultinomialModule_basic",
@@ -4240,6 +4303,8 @@ ONNX_TOSA_XFAIL_SET = {
     "BoolIntTrueModule_basic",
     "BroadcastDynamicDimModule_basic",
     "BroadcastToModule_basic",
+    "BroadcastTensorsModule_basic",
+    "BroadcastTensorsModuleList_multiple_ranks",
     "BucketizeTensorFloatModule_basic",
     "BucketizeTensorModule_basic",
     "BucketizeTensorOutInt32RightModule_basic",
@@ -4709,6 +4774,17 @@ ONNX_TOSA_XFAIL_SET = {
     "PixelShuffleModuleSpatiallyStatic_basic",
     "PixelShuffleModuleStaticRank3Int64_basic",
     "PixelShuffleModuleStaticRank4Float32_basic",
+    "PixelUnshuffleModuleStaticRank5Float32_basic",
+    "PixelUnshuffleModuleStaticRank3Int64_basic",
+    "PixelUnshuffleModuleFullDynamic_basic",
+    "PixelUnshuffleModuleSpatiallyDynamic_basic",
+    "PixelUnshuffleModuleSpatiallyStatic_basic",
+    "ChannelShuffleBasic_basic",
+    "ChannelShuffleUnitaryGroup_basic",
+    "ChannelShuffle1D_basic",
+    "ChannelShuffle4D_basic",
+    "ChannelShuffleTrailingOnes_basic",
+    "ChannelShuffleDynamicDims_basic",
     "PrimMaxIntModule_basic",
     "PrimMinIntDynamicModule_basic",
     "PrimMinIntModule_basic",
@@ -4807,6 +4883,8 @@ ONNX_TOSA_XFAIL_SET = {
     "RMSNormDynamicModule_basic",
     "ReplicationPad1dModule_2DInput_basic",
     "ReplicationPad1dModule_3DInput_basic",
+    "ReplicationPad3dModule_basic",
+    "ReplicationPad3dModuleSingleIntPad_basic",
     "RollModule_basic",
     "RsubIntModule_noalpha_basic",
     "ScalarConstantTupleModule_basic",

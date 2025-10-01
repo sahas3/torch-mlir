@@ -839,7 +839,23 @@ def aten〇pixel_shuffle〡shape(self: List[int], upscale_factor: int) -> List[i
     out.append(self[-1] * upscale_factor)
     return out
 
+def aten〇pixel_unshuffle〡shape(self: List[int], downscale_factor: int) -> List[int]:
 
+    assert len(self) >= 3, "input must be at least rank-3 in pixel_unshuffle"
+    downscale_factor_squared = downscale_factor * downscale_factor
+    assert self[-2] % (downscale_factor) == 0, "height  must be divisible by downscale_factor in pixel_unshuffle"
+    assert self[-1] % (downscale_factor) == 0, "width  must be divisible by downscale_factor in pixel_unshuffle"
+
+    out = self[0:-3]
+    out.append(self[-3] * downscale_factor_squared)
+    out.append(self[-2] // downscale_factor)
+    out.append(self[-1] // downscale_factor)
+    return out
+
+
+def aten〇channel_shuffle〡shape(self: List[int], groups: int) -> List[int]:
+    assert len(self) >= 3, "input must be at least rank-3 in channel_shuffle"
+    return self
 
 def aten〇permute〡shape(self: List[int], dims: List[int]) -> List[int]:
     return upstream_shape_functions.permute(self, dims)
@@ -948,6 +964,17 @@ def aten〇expand_as〡shape(self: List[int], other: List[int]) -> List[int]:
 
 def aten〇broadcast_to〡shape(self: List[int], size: List[int]) -> List[int]:
     return upstream_shape_functions.expand(self, size)
+
+def aten〇broadcast_tensors〡shape(tensors: List[List[int]]) -> List[List[int]]:
+    if len(tensors) == 0:
+        return []
+    result = tensors[0]
+    for i in range(1, len(tensors)):
+        result = upstream_shape_functions.broadcast(result, tensors[i])
+    out: List[List[int]] = []
+    for _ in tensors:
+        out.append(result)
+    return out
 
 def aten〇view〡shape(self: List[int], size: List[int]) -> List[int]:
     return upstream_shape_functions.view(self, size)
@@ -1100,6 +1127,15 @@ def aten〇max_unpool3d〡shape(self: List[int], indices: List[int], output_size
         return [self[0], self[1], output_size[0], output_size[1], output_size[2]]
     else:
         return [self[0], output_size[0], output_size[1], output_size[2]]
+
+def aten〇max_unpool2d〡shape(self: List[int], indices: List[int], output_size: List[int]) -> List[int]:
+    assert (len(self) == 4 or len(self) == 3), "Input be of rank 3 or 4"
+    assert (len(output_size) == 2), "output_size must have 2 elements"
+    assert (len(self) == len(indices)), "Input and indices must be of the same rank"
+    if len(self) == 4:
+        return [self[0], self[1], output_size[0], output_size[1]]
+    else:
+        return [self[0], output_size[0], output_size[1]]
 
 def aten〇upsample_nearest2d_backward〡shape(grad_output: List[int], output_size: List[int], input_size: List[int], scales_h: Optional[float] = None, scales_w: Optional[float] = None) -> List[int]:
     return input_size
@@ -2281,11 +2317,20 @@ def aten〇replication_pad2d〡shape(self: List[int], padding: List[int]) -> Lis
     assert len(padding) == 4, 'padding size expected to be 4'
     return pad_shape_fn(self, padding)
 
+def aten〇replication_pad3d〡shape(self: List[int], padding: List[int]) -> List[int]:
+    assert len(self) >= 3
+    assert len(padding) == 6, 'padding size expected to be 6'
+    return pad_shape_fn(self, padding)
+
 def aten〇replication_pad1d〡dtype(self_rank_dtype: Tuple[int, int], padding: List[int]) -> int:
     self_rank, self_dtype = self_rank_dtype
     return self_dtype
 
 def aten〇replication_pad2d〡dtype(self_rank_dtype: Tuple[int, int], padding: List[int]) -> int:
+    self_rank, self_dtype = self_rank_dtype
+    return self_dtype
+
+def aten〇replication_pad3d〡dtype(self_rank_dtype: Tuple[int, int], padding: List[int]) -> int:
     self_rank, self_dtype = self_rank_dtype
     return self_dtype
 
@@ -3049,6 +3094,16 @@ def aten〇pixel_shuffle〡dtype(self_rank_dtype: Tuple[int, int], upscale_facto
     self_rank, self_dtype = self_rank_dtype
     return self_dtype
 
+@check_dtype_function(_check_tensors_with_the_same_dtype(tensor_shapes=[(1, 2, 2)], downscale_factor = 2))
+def aten〇pixel_unshuffle〡dtype(self_rank_dtype: Tuple[int, int], downscale_factor: int) -> int:
+    self_rank, self_dtype = self_rank_dtype
+    return self_dtype
+
+@check_dtype_function(_check_tensors_with_the_same_dtype(tensor_shapes=[(1, 4, 4, 5)], groups = 2))
+def aten〇channel_shuffle〡dtype(self_rank_dtype: Tuple[int, int], groups: int) -> int:
+    self_rank, self_dtype = self_rank_dtype
+    return self_dtype
+
 @check_dtype_function(_check_tensors_with_the_same_dtype(tensor_shapes=[(2, 3, 7)], kernel_size=[2], error_types={torch.uint8}))
 def aten〇avg_pool1d〡dtype(self_rank_dtype: Tuple[int, int], kernel_size: List[int], stride: List[int] = (), padding: List[int] = (0,), ceil_mode: bool = False, count_include_pad: bool = True) -> int:
     self_rank, self_dtype = self_rank_dtype
@@ -3147,6 +3202,17 @@ def aten〇bitwise_not〡dtype(self_rank_dtype: Tuple[int, int]) -> int:
 def aten〇broadcast_to〡dtype(self_rank_dtype: Tuple[int, int], size: List[int]) -> int:
     self_rank, self_dtype = self_rank_dtype
     return self_dtype
+
+def aten〇broadcast_tensors〡dtype(tensors_rank_dtype: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    max_rank = 0
+    for rd in tensors_rank_dtype:
+        if rd[0] > max_rank:
+            max_rank = rd[0]
+    out: List[Tuple[int, int]] = []
+    for tensor_rank_dtype in tensors_rank_dtype:
+        tensor_rank, tensor_dtype = tensor_rank_dtype
+        out.append((max_rank, tensor_dtype))
+    return out
 
 @check_dtype_function(
     _check_tensors_with_the_same_dtype(num_of_tensors=2,dim=0, error_types={torch.complex128, torch.complex64, *all_integer_dtypes()}))
@@ -3591,6 +3657,10 @@ def aten〇max_pool3d_with_indices〡dtype(self_rank_dtype: Tuple[int, int], ker
     return self_dtype, torch.int64
 
 def aten〇max_unpool3d〡dtype(self_rank_dtype: Tuple[int, int], indices_rank_dtype: Tuple[int, int], output_size: List[int], stride: List[int], padding: List[int]) -> int:
+    self_rank, self_dtype = self_rank_dtype
+    return self_dtype
+
+def aten〇max_unpool2d〡dtype(self_rank_dtype: Tuple[int, int], indices_rank_dtype: Tuple[int, int], output_size: List[int]) -> int:
     self_rank, self_dtype = self_rank_dtype
     return self_dtype
 
