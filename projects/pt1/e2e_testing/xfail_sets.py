@@ -5198,6 +5198,16 @@ FX_IMPORTER_TOSA_LINALG_CRASHING_SET = FX_IMPORTER_CRASHING_SET | {
     "InterpolateStaticModule_scales_bilinear_align_corners",
     "CrossEntropyLossModule_basic",
     "CrossEntropyLossNoReductionModule_basic",
+    "ChunkListUnpackDynamic_Module_basic",
+    "ChunkListUnpackUnevenDynamic_Module_basic",
+    "ChunkListUnpackUneven_Module_basic",
+    "ChunkListUnpack_Module_basic",
+    "SplitTensorGetItem_Module_basic",
+    "SplitTensorLastSmallerModule_basic",
+    "SplitTensorListUnpackModule_basic",
+    "SplitTensorNegativeDimModule_basic",
+    "SplitWithSizesListUnpackModule_basic",
+    "SplitWithSizes_Module_basic",
 }
 
 FX_IMPORTER_TOSA_LINALG_XFAIL_SET = FX_IMPORTER_XFAIL_SET | {
@@ -5230,6 +5240,11 @@ FX_IMPORTER_TOSA_LINALG_XFAIL_SET = FX_IMPORTER_XFAIL_SET | {
     "TrilIndicesAllZerosModule_basic",
     "TriuIndicesAllZerosModule_basic",
     "TypeConversionUint8ToF32Module_basic",
+    "AsStridedWithOffsetModule_basic",
+    "AtenAsStridedModule_basic",
+    "AtenAsStridedNoStorageOffsetModule_basic",
+    "AtenAsStridedUnknownSizeModule_basic",
+    "NativeGroupNormModule_basic",
 }
 
 FX_IMPORTER_TOSA_LINALG_XFAIL_SET = FX_IMPORTER_TOSA_LINALG_XFAIL_SET - {
@@ -5239,13 +5254,11 @@ FX_IMPORTER_TOSA_LINALG_XFAIL_SET = FX_IMPORTER_TOSA_LINALG_XFAIL_SET - {
     "AdaptiveMaxPool1dDynamicNoBatch_basic",
     "AdaptiveMaxPool1dDynamic_basic",
     "AdaptiveMaxPool1dStatic_basic",
-    "AsStridedWithOffsetModule_basic",
     "AvgPool2dCHWModule_basic",
     "ChunkListUnpackDynamic_Module_basic",
     "ChunkListUnpackUnevenDynamic_Module_basic",
     "ChunkListUnpackUneven_Module_basic",
     "ChunkListUnpack_Module_basic",
-    "NativeGroupNormModule_basic",
     "ReduceAnyDimFloatModule_basic",
     "ReflectionPad3dModuleBack_basic",
     "ReflectionPad3dModuleBottom_basic",
