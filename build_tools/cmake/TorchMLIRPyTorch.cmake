@@ -26,29 +26,11 @@ endfunction()
 
 # TorchMLIRConfigurePyTorch
 # Extensions compiled against PyTorch must be ABI-compatible with PyTorch.
-# On Linux, there are two components to this:
-#   1) Dual ABI settings for libstdc++
+# On Linux, we need to ensure we honor dual ABI settings for libstdc++
 #      See https://gcc.gnu.org/onlinedocs/libstdc++/manual/using_dual_abi.html
 # For this, PyTorch helpfully provides a function to check which ABI it was
 # compiled against.
-#   2) C++ ABI compatibility version
-#      See https://gcc.gnu.org/onlinedocs/libstdc++/manual/abi.html (Sec 5/6)
-# The second is a bit more complicated. GCC has official compatibility strings
-# which can be specified by -fabi-version. Clang has no notion of ABI
-# versioning (https://lists.llvm.org/pipermail/cfe-dev/2015-June/043735.html).
-# Separately, pybind11 keeps an internal variable which records its ABI info
-# (PYBIND11_INTERNALS_ID in include/pybind11/detail/internals.h). Differences
-# in this variable between torch-mlir and PyTorch will cause type errors.
-# Thus, our best option is to:
-#   a) Identify which ABI version PyTorch was compiled with
-#   b) Tell gcc to use that version
-#     or
-#   c) Tell clang to pretend to use it and hope it's ABI-compatible, and
-#      tell pybind to pretend we're gcc.
-#
-# MacOS does not have a dual ABI problem.
-# FIXME: I don't know if MacOS needs ABI compatibility version flags.
-#
+
 # In the future, we may want to switch away from custom building these
 # extensions and instead rely on the Torch machinery directly (definitely want
 # to do that for official builds).
@@ -67,23 +49,11 @@ function(TorchMLIRConfigurePyTorch)
     endif()
     message(STATUS "PyTorch C++ Dual ABI setting: \"${_use_cxx11_abi}\"")
 
-    # Check ABI compatibility version
-    execute_process(
-      COMMAND ${Python3_EXECUTABLE}
-      -c "import torch; import sys; abi=torch._C._PYBIND11_BUILD_ABI; abi.startswith('_cxxabi10') or sys.exit(1); sys.stdout.write(str(abi[-2:]))"
-      RESULT_VARIABLE _result
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-      OUTPUT_VARIABLE _cxx_abi_version)
-    if(_result)
-      message(FATAL_ERROR "Failed to determine C++ ABI version")
-    endif()
-    message(STATUS "PyTorch C++ ABI version: \"${_cxx_abi_version}\"")
-
     # Specialize compile flags for compiler
     if(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
-      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi} -fabi-version=${_cxx_abi_version}")
+      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi}")
     elseif(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
-      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi} -U__GXX_ABI_VERSION -D__GXX_ABI_VERSION=10${_cxx_abi_version} '-DPYBIND11_COMPILER_TYPE=\"_gcc\"'")
+      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi} -U__GXX_ABI_VERSION '-DPYBIND11_COMPILER_TYPE=\"_gcc\"'")
     else()
       message(WARNING "Unrecognized compiler. Cannot determine ABI flags.")
       return()
@@ -107,22 +77,11 @@ function(TorchMLIRConfigureLibTorch)
     endif()
     message(STATUS "LibTorch C++ Dual ABI setting: \"${_use_cxx11_abi}\"")
 
-    # Check ABI compatibility version
-    execute_process(
-      COMMAND bash "-c" "strings ${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so | egrep '^_cxxabi[0-9]{4}' | egrep -o '..$'"
-      RESULT_VARIABLE _result
-      OUTPUT_VARIABLE _cxx_abi_version
-      OUTPUT_STRIP_TRAILING_WHITESPACE)
-    if(_result)
-      message(FATAL_ERROR "Failed to determine LibTorch C++ ABI version")
-    endif()
-    message(STATUS "LibTorch C++ ABI version: \"${_cxx_abi_version}\"")
-
     # Specialize compile flags for compiler
     if(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
-      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi} -fabi-version=${_cxx_abi_version}")
+      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi}")
     elseif(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
-      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi} -U__GXX_ABI_VERSION -D__GXX_ABI_VERSION=10${_cxx_abi_version} '-DPYBIND11_COMPILER_TYPE=\"_gcc\"'")
+      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi} -U__GXX_ABI_VERSION '-DPYBIND11_COMPILER_TYPE=\"_gcc\"'")
     else()
       message(WARNING "Unrecognized compiler. Cannot determine ABI flags.")
       return()
