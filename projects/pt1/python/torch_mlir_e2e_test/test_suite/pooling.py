@@ -180,6 +180,55 @@ def AdaptiveAvgPool2dUnitOutputSizeDynamicModule_basic(module, tu: TestUtils):
 # ==============================================================================
 
 
+class MaxPool1dWithIndicesModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args(
+        [
+            None,
+            ([-1, -1, -1], torch.float32, True),
+        ]
+    )
+    def forward(self, x):
+        return torch.ops.aten.max_pool1d_with_indices(
+            x, kernel_size=[6], stride=[2], padding=[3], dilation=2, ceil_mode=False
+        )
+
+
+@register_test_case(module_factory=lambda: MaxPool1dWithIndicesModule())
+def MaxPool1dWithIndicesModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(1, 64, 112, low=-1))
+
+
+class MaxPool1dWithIndicesCeilModeModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args(
+        [
+            None,
+            ([-1, -1, -1], torch.float32, True),
+        ]
+    )
+    def forward(self, x):
+        return torch.ops.aten.max_pool1d_with_indices(
+            x, kernel_size=[4], stride=[2], padding=[2], dilation=2, ceil_mode=True
+        )
+
+
+@register_test_case(module_factory=lambda: MaxPool1dWithIndicesCeilModeModule())
+def MaxPool1dWithIndicesCeilModeModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(3, 25, 37, low=-1))
+
+
+# ==============================================================================
+
+
 class MaxPool1dModule(torch.nn.Module):
 
     def __init__(self):
@@ -2456,6 +2505,62 @@ class AdaptiveMaxPool3dStaticWithIndices(torch.nn.Module):
 @register_test_case(module_factory=lambda: AdaptiveMaxPool3dStaticWithIndices())
 def AdaptiveMaxPool3dStaticWithIndices_basic(module, tu: TestUtils):
     module.forward(tu.rand(1, 512, 10, 16, 17))
+
+
+# ==============================================================================
+
+
+class MaxUnpool2dModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args(
+        [
+            None,
+            ([2, 2, 2, 4], torch.float32, True),
+            ([2, 2, 2, 4], torch.int64, True),
+        ]
+    )
+    def forward(self, x, indices):
+        return torch.ops.aten.max_unpool2d(x, indices, (4, 8))
+
+
+@register_test_case(module_factory=lambda: MaxUnpool2dModule())
+def MaxUnpool2dModule_basic(module, tu: TestUtils):
+    input = tu.rand(2, 2, 4, 8)
+    pool = torch.nn.MaxPool2d(kernel_size=(2, 2), return_indices=True)
+    output, indices = pool(input)
+
+    module.forward(output, indices)
+
+
+# ==============================================================================
+
+
+class MaxUnpool2dModule_3dInput(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args(
+        [
+            None,
+            ([2, 2, 4], torch.float32, True),
+            ([2, 2, 4], torch.int64, True),
+        ]
+    )
+    def forward(self, x, indices):
+        return torch.ops.aten.max_unpool2d(x, indices, (4, 8))
+
+
+@register_test_case(module_factory=lambda: MaxUnpool2dModule_3dInput())
+def MaxUnpool2dModule_3dInput_basic(module, tu: TestUtils):
+    input = tu.rand(2, 4, 8)
+    pool = torch.nn.MaxPool2d(kernel_size=(2, 2), return_indices=True)
+    output, indices = pool(input)
+
+    module.forward(output, indices)
 
 
 # ==============================================================================

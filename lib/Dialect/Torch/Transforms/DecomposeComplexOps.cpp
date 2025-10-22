@@ -24,7 +24,6 @@
 #include "llvm/ADT/StringSet.h"
 #include <cstdint>
 #include <set>
-
 using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
@@ -3415,7 +3414,7 @@ public:
     // calculate common shape for broadcast
     SmallVector<int64_t> broadcastShape;
     SmallVector<Value> broadcastShapeValue;
-    computeBroadcastShape(rewriter, loc, self, other, broadcastShape,
+    computeBroadcastShape(rewriter, loc, {self, other}, broadcastShape,
                           broadcastShapeValue);
 
     Type broadcastType = ValueTensorType::get(
@@ -3562,7 +3561,6 @@ public:
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(AtenPixelShuffleOp op,
                                 PatternRewriter &rewriter) const override {
-
     Location loc = op.getLoc();
     Value inValue = op.getSelf();
     auto inType = cast<BaseTensorType>(inValue.getType());
@@ -3585,41 +3583,11 @@ public:
 
     const auto inOptionalDType = inType.getOptionalDtype();
 
-    auto getTypeFromShape = [inOptionalDType](auto &&vals) {
-      // Get a vector of integers from a vector of Values.
-      auto getIntShape = [](auto &&vals) {
-        SmallVector<int64_t> shape;
-        shape.reserve(vals.size());
-        for (auto v : vals) {
-          int64_t cst_val;
-          if (matchPattern(v, m_TorchConstantInt(&cst_val))) {
-            shape.push_back(cst_val);
-          } else {
-            shape.push_back(kUnknownSize);
-          }
-        }
-        return shape;
-      };
-
-      const auto intShape = getIntShape(vals);
-      return ValueTensorType::get(vals[0].getContext(),
-                                  llvm::ArrayRef(intShape), inOptionalDType);
-    };
-
     auto nLeadingDims = inRank - 3;
 
-    // Get the size of the dimension 'i'. Note the use of 'createOrFold' instead
-    // of 'create': if the dimension size is known, then the AtenSizeIntOp is
-    // folded to a ConstantOp.
-    auto getDimSize = [&](uint64_t i) -> Value {
-      Value dim =
-          rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(i));
-      return rewriter.createOrFold<AtenSizeIntOp>(loc, inValue, dim);
-    };
-
-    auto inC = getDimSize(inRank - 3);
-    auto inH = getDimSize(inRank - 2);
-    auto inW = getDimSize(inRank - 1);
+    auto inC = getTensorDimSize(rewriter, inValue, inRank - 3);
+    auto inH = getTensorDimSize(rewriter, inValue, inRank - 2);
+    auto inW = getTensorDimSize(rewriter, inValue, inRank - 1);
 
     auto factor = op.getUpscaleFactor();
 
@@ -3677,24 +3645,27 @@ public:
     auto partiallyExpanded =
         rewriter
             .create<PrimsSplitDimOp>(
-                loc, getTypeFromShape(partiallyExpandedShape), inValue,
-                dimensionConstants[nLeadingDims], outC)
+                loc,
+                getTensorTypeFromShapeValues(partiallyExpandedShape,
+                                             inOptionalDType),
+                inValue, dimensionConstants[nLeadingDims], outC)
             .getResult();
 
     // Split new dimension factorSquared -> (factor, factor)
     auto fullyExpanded = rewriter.create<PrimsSplitDimOp>(
-        loc, getTypeFromShape(prePermuteShape), partiallyExpanded,
-        dimensionConstants[nLeadingDims + 1], factor);
+        loc, getTensorTypeFromShapeValues(prePermuteShape, inOptionalDType),
+        partiallyExpanded, dimensionConstants[nLeadingDims + 1], factor);
 
     // Perform the permutation
-    auto permuted =
-        rewriter.create<AtenPermuteOp>(loc, getTypeFromShape(postPermuteShape),
-                                       fullyExpanded, permuteDimsOrder);
+    auto permuted = rewriter.create<AtenPermuteOp>(
+        loc, getTensorTypeFromShapeValues(postPermuteShape, inOptionalDType),
+        fullyExpanded, permuteDimsOrder);
 
     // Collapse final 2 dimension
     auto partiallyCollapsed = rewriter.create<PrimsCollapseOp>(
-        loc, getTypeFromShape(partiallyCollapsedShape), permuted,
-        dimensionConstants[nLeadingDims + 3],
+        loc,
+        getTensorTypeFromShapeValues(partiallyCollapsedShape, inOptionalDType),
+        permuted, dimensionConstants[nLeadingDims + 3],
         dimensionConstants[nLeadingDims + 4]);
 
     // Collapse back to original rank
@@ -3702,6 +3673,274 @@ public:
         op, op.getType(), partiallyCollapsed,
         dimensionConstants[nLeadingDims + 1],
         dimensionConstants[nLeadingDims + 2]);
+
+    return success();
+  }
+};
+} // namespace
+
+// Decompose aten.pixel_unshuffle into: prims.split_dim, aten.permute, and
+// prims.collapse operations.
+//
+// We want to do the exact opposite of aten.pixel_shuffle
+//
+// 'r' is referred to as the 'downscale factor' or just 'factor' below.
+//
+// If input is a tensor of shape
+//     (*leading_dims, C, H*r, W*r),
+//
+// where leading_dims is of size N, then
+//    X = pixel_unshuffle(input, downscale_factor)
+//
+// gets replaced with
+//    X = input.split_dim(...)  # shape (*leading_dims, C, H, r, W*r)
+//    X = X.split_dim(...)      # shape (*leading_dims, C, H, r, W, r)
+//    X = X.permute(0, ..., N, N+2, N+4, N+1, N+3)
+//                              # shape (*leading_dims, C, r, r, H, W)
+//    X = X.collapse(...)       # shape (*leading_dims, C*r*r, H, W)
+//
+namespace {
+class DecomposeAtenPixelUnshuffleOp
+    : public OpRewritePattern<AtenPixelUnshuffleOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenPixelUnshuffleOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Location loc = op.getLoc();
+    Value inValue = op.getSelf();
+    auto inType = cast<BaseTensorType>(inValue.getType());
+    auto maybeSizes = inType.getOptionalSizes();
+    if (!maybeSizes) {
+      return rewriter.notifyMatchFailure(
+          op, "Expected input tensor to have known rank.");
+    }
+    auto inShape = maybeSizes.value();
+    auto inRank = inShape.size();
+
+    // The input tensor must have at least 3 dimensions: (1) the channel
+    // dimension which gets bigger by 'factor*factor', (2) the H channel which
+    // gets smaller by 'factor' and (3) the W channel which get smaller by
+    // 'factor'. The total number of dimensions is 3 + N, where N is the number
+    // of leading dimensions, and N >= 0 so the input must have rank at least 3.
+    if (inRank < 3)
+      return rewriter.notifyMatchFailure(
+          op, "Expected input tensor to have rank greater than 2.");
+
+    const auto inOptionalDType = inType.getOptionalDtype();
+
+    auto nLeadingDims = inRank - 3;
+
+    auto inC = getTensorDimSize(rewriter, inValue, inRank - 3);
+    auto inH = getTensorDimSize(rewriter, inValue, inRank - 2);
+    auto inW = getTensorDimSize(rewriter, inValue, inRank - 1);
+
+    auto factor = op.getDownscaleFactor();
+
+    Value factorSquared =
+        rewriter.createOrFold<AtenMulIntOp>(loc, factor, factor);
+
+    Value outC = rewriter.createOrFold<AtenMulIntOp>(loc, inC, factorSquared);
+
+    Value outH = rewriter.createOrFold<AtenFloordivIntOp>(loc, inH, factor);
+    Value outW = rewriter.createOrFold<AtenFloordivIntOp>(loc, inW, factor);
+
+    SmallVector<Value> dimensionConstants;
+    dimensionConstants.reserve(inRank + 2);
+    for (unsigned i = 0; i < inRank + 2; ++i) {
+      dimensionConstants.push_back(
+          rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(i)));
+    }
+
+    SmallVector<Value> leadingDims;
+    leadingDims.reserve(nLeadingDims);
+    for (unsigned i = 0; i < nLeadingDims; ++i) {
+      Value leadingDimSize = rewriter.createOrFold<AtenSizeIntOp>(
+          loc, inValue, dimensionConstants[i]);
+      leadingDims.push_back(leadingDimSize);
+    }
+
+    SmallVector<Value> prePermuteShape = leadingDims;
+    prePermuteShape.append({inC, outH, factor, outW, factor});
+
+    SmallVector<Value> postPermuteShape = leadingDims;
+    postPermuteShape.append({inC, factor, factor, outH, outW});
+
+    SmallVector<Value> partiallyCollapsedShape = leadingDims;
+    partiallyCollapsedShape.append({inC, factorSquared, outH, outW});
+
+    SmallVector<Value> outShape = leadingDims;
+    outShape.append({outC, outH, outW});
+
+    SmallVector<Value> permutation{dimensionConstants.begin(),
+                                   dimensionConstants.begin() + nLeadingDims};
+    SmallVector<uint64_t> permutationTail{0, 2, 4, 1, 3};
+    for (uint64_t d : permutationTail) {
+      permutation.push_back(dimensionConstants[nLeadingDims + d]);
+    }
+
+    Value permuteDimsOrder = rewriter.create<PrimListConstructOp>(
+        loc, Torch::ListType::get(Torch::IntType::get(op->getContext())),
+        permutation);
+
+    SmallVector<Value> heightSplitShape = leadingDims;
+    heightSplitShape.append({inC, outH, factor, inW});
+
+    // Split input channel inH -> (outH, factor)
+    auto partiallyExpanded =
+        rewriter
+            .create<PrimsSplitDimOp>(
+                loc,
+                getTensorTypeFromShapeValues(heightSplitShape, inOptionalDType),
+                inValue, dimensionConstants[nLeadingDims + 1], outH)
+            .getResult();
+
+    // Split new dimension inW -> (outW, factor)
+    auto fullyExpanded = rewriter.create<PrimsSplitDimOp>(
+        loc, getTensorTypeFromShapeValues(prePermuteShape, inOptionalDType),
+        partiallyExpanded, dimensionConstants[nLeadingDims + 3], outW);
+
+    // Perform the permutation
+    auto permuted = rewriter.create<AtenPermuteOp>(
+        loc, getTensorTypeFromShapeValues(postPermuteShape, inOptionalDType),
+        fullyExpanded, permuteDimsOrder);
+
+    // Collapse final 2 dimensions back to original rank
+    rewriter.replaceOpWithNewOp<PrimsCollapseOp>(
+        op, op.getType(), permuted, dimensionConstants[nLeadingDims],
+        dimensionConstants[nLeadingDims + 2]);
+
+    return success();
+  }
+};
+} // namespace
+
+// Decompose aten.channel_shuffle into: prims.split_dim, aten.permute, and
+// prims.collapse operations.
+//
+// If input is a tensor of shape
+//     (N, g*C, H, W),
+//
+// then
+//    X = channel_shuffle(input, groups)
+//
+// gets replaced with
+//    X = input.split_dim(...)      # shape (N, g, C, *)
+//    X = X.permute(0, 2, 1, ...)   # shape (N, C, g, *)
+//    X = X.collapse(...)           # shape (N, C*g, *)
+//
+// 'g' above is referred to as the number of 'groups'. N is the batch
+// dimension, and can't be omitted. In PyTorch's ChannelShuffle operator
+// if the batch dimension is ommitted, the first spatial dimenion is seen
+// as the channel. PyTorch errors out for the code below indicating that
+// 4 is not divisible by 3:
+// input_tensor = torch.arange(1, 37, dtype=torch.float32).view(3, 4, 3)
+// channel_shuffle_layer = nn.ChannelShuffle(groups=3)
+// output_tensor = channel_shuffle_layer(input_tensor)
+//
+// The decomposition is based on this specification:
+// https://pytorch.org/docs/stable/generated/torch.nn.ChannelShuffle.html
+// and PyTorch implementation: aten/src/ATen/native/ChanelShuffle.cpp
+// (yes, the filename is misspelled "Chanel" in upstream PyTorch)
+//
+namespace {
+class DecomposeAtenChannelShuffleOp
+    : public OpRewritePattern<AtenChannelShuffleOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenChannelShuffleOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value inValue = op.getSelf();
+    auto inType = cast<BaseTensorType>(inValue.getType());
+    auto maybeSizes = inType.getOptionalSizes();
+    if (!maybeSizes) {
+      return rewriter.notifyMatchFailure(
+          op, "Expected input tensor to have known rank.");
+    }
+    auto inShape = maybeSizes.value();
+    auto inRank = inShape.size();
+
+    // The input tensor must have at least 3 dimensions: batch size,
+    // channel size, and at least one spatial dimension.
+    if (inRank < 3)
+      return rewriter.notifyMatchFailure(
+          op, "Expected input tensor to have rank greater than or equal to 3.");
+
+    auto numOfSpatialDims = inRank - 2;
+
+    // The channel dimension is always the second dimension. PyTorch errors out
+    // if the batch dimension (first dimension) is not present. See comment at
+    // the top of this class for details.
+    auto inC = getTensorDimSize(rewriter, inValue, 1);
+    SmallVector<Value> inSpatialDims;
+    inSpatialDims.reserve(numOfSpatialDims);
+    for (unsigned i = 2; i < (2 + numOfSpatialDims); ++i) {
+      inSpatialDims.push_back(getTensorDimSize(rewriter, inValue, i));
+    }
+
+    auto groups = op.getGroups();
+
+    // Temporary channel dimension size: tempC = inC / groups
+    // Assumes input has been validated: `inC % groups == 0`
+    // This is enforced by PyTorch's runtime and is required for correctness.
+    Value tempC = rewriter.createOrFold<AtenFloordivIntOp>(loc, inC, groups);
+
+    // Create constants for split/permute/collapse operations. Note that we
+    // need an extra constant for the channel dimension split.
+    SmallVector<Value> dimensionConstants;
+    dimensionConstants.reserve(inRank + 1);
+    for (unsigned i = 0; i < inRank + 1; ++i) {
+      dimensionConstants.push_back(
+          rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(i)));
+    }
+
+    Value batchDimSize = rewriter.createOrFold<AtenSizeIntOp>(
+        loc, inValue, dimensionConstants[0]);
+
+    SmallVector<Value> splitShape;
+    splitShape.reserve(inRank + 1);
+    splitShape.append({batchDimSize, groups, tempC});
+    splitShape.append(inSpatialDims); // Appends all spatial dimensions
+
+    SmallVector<Value> permuteShape;
+    permuteShape.reserve(inRank + 1);
+    permuteShape.append({batchDimSize, tempC, groups});
+    permuteShape.append(inSpatialDims); // Appends all spatial dimensions
+
+    // Permute (N, groups, tempC, *) -> (N, tempC, groups, *)
+    SmallVector<Value> permutation{dimensionConstants[0],  // batch dimension
+                                   dimensionConstants[2],  // tempC
+                                   dimensionConstants[1]}; // groups
+    for (unsigned i = 3; i < inRank + 1; ++i) {
+      permutation.push_back(dimensionConstants[i]);
+    }
+
+    Value permuteDimsOrder = rewriter.create<PrimListConstructOp>(
+        loc, Torch::ListType::get(Torch::IntType::get(op->getContext())),
+        permutation);
+
+    const auto inOptionalDType = inType.getOptionalDtype();
+
+    Value dimC = dimensionConstants[1];
+    Value dimG = dimensionConstants[2];
+
+    // Split input channel inC -> (groups, inC/groups)
+    auto expandedTensor =
+        rewriter
+            .create<PrimsSplitDimOp>(
+                loc, getTensorTypeFromShapeValues(splitShape, inOptionalDType),
+                inValue, dimC, tempC)
+            .getResult();
+
+    // Perform the permutation
+    auto permuted = rewriter.create<AtenPermuteOp>(
+        loc, getTensorTypeFromShapeValues(permuteShape, inOptionalDType),
+        expandedTensor, permuteDimsOrder);
+
+    // Collapse (C, groups) back into a single channel dimension
+    rewriter.replaceOpWithNewOp<PrimsCollapseOp>(op, op.getType(), permuted,
+                                                 dimC, dimG);
 
     return success();
   }
@@ -4941,6 +5180,30 @@ public:
         loc, ListType::get(IntType::get(context)), newSizes);
     rewriter.replaceOpWithNewOp<AtenViewOp>(op, op.getType(), op.getSelf(),
                                             newSizeList);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+template <typename UpsampleVecOp>
+class DecomposeAtenUpsampleNearestVecOp
+    : public OpRewritePattern<UpsampleVecOp> {
+public:
+  using OpRewritePattern<UpsampleVecOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(UpsampleVecOp op,
+                                PatternRewriter &rewriter) const override {
+    Value scales = op.getScaleFactors();
+    static_assert(std::is_same_v<UpsampleVecOp, AtenUpsampleNearest1dVecOp> ||
+                  std::is_same_v<UpsampleVecOp, AtenUpsampleNearest2dVecOp>);
+    Value cstMode = rewriter.create<Torch::ConstantStrOp>(
+        op.getLoc(), rewriter.getStringAttr("nearest"));
+    Value cstNone = rewriter.create<Torch::ConstantNoneOp>(op.getLoc());
+    Value cstAntialias =
+        rewriter.create<Torch::ConstantBoolOp>(op.getLoc(), false);
+    rewriter.replaceOpWithNewOp<Aten__InterpolateSizeListScaleListOp>(
+        op, op.getType(), op.getInput(), op.getOutputSize(),
+        op.getScaleFactors(), cstMode, cstNone, cstNone, cstAntialias);
     return success();
   }
 };
@@ -8536,9 +8799,13 @@ class DecomposeAtenPadOp : public OpRewritePattern<AtenPadOp> {
         rewriter.replaceOpWithNewOp<AtenReplicationPad2dOp>(
             op, op.getType(), op.getSelf(), usefulPads);
         break;
+      case 3:
+        rewriter.replaceOpWithNewOp<AtenReplicationPad3dOp>(
+            op, op.getType(), op.getSelf(), usefulPads);
+        break;
       default:
         return rewriter.notifyMatchFailure(
-            op, "unsupported number of dims for 'reflect' mode: " +
+            op, "unsupported number of dims for 'replicate' mode: " +
                     std::to_string(numPadDims));
       }
       return success();
@@ -8962,7 +9229,7 @@ class DecomposeAtenCosineSimilarityOp
     // Broadcast x1 and x2 to the same shape
     SmallVector<int64_t> indexBroadcastShapeInt;
     SmallVector<Value> indexBroadcastShapeValue;
-    computeBroadcastShape(rewriter, loc, x1, x2, indexBroadcastShapeInt,
+    computeBroadcastShape(rewriter, loc, {x1, x2}, indexBroadcastShapeInt,
                           indexBroadcastShapeValue);
     Type dtype = cast<BaseTensorType>(x1.getType()).getOptionalDtype();
     Type broadcastType = ValueTensorType::get(
@@ -9318,9 +9585,15 @@ static LogicalResult calculateVariance(OpTy op, PatternRewriter &rewriter,
         op, "support floating-point type input only");
   }
 
-  // Upcasting the input tensor to `F64` dtype for higher precision during the
-  // computation of the result.
-  if (inputTensorTy.getDtype().getIntOrFloatBitWidth() != 64) {
+  // Upcasting the input tensor to a double-bitwidth dtype for higher precision
+  // during the computation of the result.
+  unsigned bitwidth = inputTensorTy.getDtype().getIntOrFloatBitWidth();
+  if (bitwidth != 64) {
+    Type targetTy = rewriter.getF64Type();
+    if (bitwidth == 8)
+      targetTy = rewriter.getBF16Type();
+    else if (bitwidth == 16)
+      targetTy = rewriter.getF32Type();
     self = convertTensorToDtype(rewriter, loc, self, rewriter.getF64Type());
     inputTensorTy = cast<BaseTensorType>(self.getType());
   }
@@ -11329,7 +11602,7 @@ public:
     auto resultTy = dyn_cast<BaseTensorType>(op.getType());
     SmallVector<int64_t> broadcastShape;
     SmallVector<Value> broadcastShapeValue;
-    computeBroadcastShape(rewriter, loc, input, value, broadcastShape,
+    computeBroadcastShape(rewriter, loc, {input, value}, broadcastShape,
                           broadcastShapeValue);
 
     auto broadcastType = ValueTensorType::get(
@@ -12428,6 +12701,249 @@ public:
 } // namespace
 
 namespace {
+class DecomposeAtenBroadcastTensorsOp
+    : public OpRewritePattern<AtenBroadcastTensorsOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenBroadcastTensorsOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Location loc = op.getLoc();
+    SmallVector<Value> tensors;
+    if (!getListConstructElements(op.getTensors(), tensors))
+      return rewriter.notifyMatchFailure(op, "Unable to get tensors");
+    int64_t numTensors = tensors.size();
+
+    SmallVector<int64_t> broadcastShape;
+    SmallVector<Value> broadcastShapeValue;
+
+    computeBroadcastShape(rewriter, loc, tensors, broadcastShape,
+                          broadcastShapeValue);
+
+    auto resType = cast<BaseTensorType>(tensors[0].getType());
+    auto dtype = resType.getDtype();
+    Type broadcastType = ValueTensorType::get(
+        op.getContext(), llvm::ArrayRef(broadcastShape), dtype);
+
+    Value broadcastShapeTorchList = rewriter.create<PrimListConstructOp>(
+        loc, Torch::ListType::get(Torch::IntType::get(op.getContext())),
+        broadcastShapeValue);
+
+    SmallVector<Value> broadcastedValues;
+    for (int64_t i = 0; i < numTensors; i++) {
+      auto inputTensor = tensors[i];
+      auto broadcastedVal = rewriter.create<AtenBroadcastToOp>(
+          loc, broadcastType, inputTensor, broadcastShapeTorchList);
+      broadcastedValues.push_back(broadcastedVal);
+    }
+
+    auto broadcastedValuesList = rewriter.create<Torch::PrimListConstructOp>(
+        loc, Torch::ListType::get(broadcastType), broadcastedValues);
+
+    rewriter.replaceOp(op, broadcastedValuesList);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+class DecomposeAtenAsStridedOp : public OpRewritePattern<AtenAsStridedOp> {
+public:
+  using OpRewritePattern<AtenAsStridedOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenAsStridedOp op,
+                                PatternRewriter &rewriter) const override {
+
+    // The `aten.as_strided` operation is decomposed into a series of
+    // operations that compute the indices based on the provided sizes and
+    // strides, and then index into the flattened input tensor as follows:
+
+    // input_flat = input.view(-1)
+    //
+    // for dim, s in enumerate(self.size):
+    //     arange = torch.arange(s)
+    //     view_shape = []
+    //     for i in range(len(self.size)):
+    //         if i == dim:
+    //             view_shape.append(-1)
+    //         else:
+    //             view_shape.append(1)
+    //     arange = arange.view(view_shape)
+    //     if dim != 0:
+    //         idx = idx + arange * self.stride[dim]
+    //
+    // # Flatten indices and add offset
+    // final_indices = idx.reshape(-1) + self.storage_offset
+    //
+    // # Index the flattened input tensor
+    // output = input_flat[final_indices]
+    //
+    // # Reshape to desired output size
+    // return output.view(self.size)
+
+    Location loc = op.getLoc();
+    MLIRContext *context = op->getContext();
+    Value input = op.getSelf();
+    auto inputType = dyn_cast<BaseTensorType>(input.getType());
+
+    if (!inputType || !inputType.hasSizes())
+      return rewriter.notifyMatchFailure(op, "input must have sizes");
+
+    SmallVector<int64_t> sizesInts;
+    if (!matchPattern(op.getSize(), m_TorchListOfConstantInts(sizesInts)))
+      return rewriter.notifyMatchFailure(
+          op, "sizes must be a list of constant ints");
+
+    SmallVector<int64_t> stridesInts;
+    if (!matchPattern(op.getStride(), m_TorchListOfConstantInts(stridesInts)))
+      return rewriter.notifyMatchFailure(
+          op, "strides must be a list of constant ints");
+
+    int64_t storageOffset = 0;
+    if (!isa<Torch::NoneType>(op.getStorageOffset().getType())) {
+      if (!matchPattern(op.getStorageOffset(),
+                        m_TorchConstantInt(&storageOffset)))
+        return rewriter.notifyMatchFailure(
+            op, "storage_offset must be a constant integer");
+    }
+
+    ArrayRef<int64_t> inputSizes = inputType.getSizes();
+    int64_t inputRank = inputSizes.size();
+    int64_t resultRank = sizesInts.size();
+
+    Value cstZero =
+        rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(0));
+    if (inputRank > 1) {
+      // If the input is not a 1-d tensor, we need to flatten it
+      // to a 1D tensor before applying the strided indexing.
+      int64_t flattenedInputSize = 1;
+      for (int64_t size : inputSizes) {
+        if (size == kUnknownSize) {
+          flattenedInputSize = kUnknownSize;
+          break;
+        }
+        flattenedInputSize *= size;
+      }
+
+      auto flattenedInputTy =
+          cast<BaseTensorType>(inputType.getWithSizesAndDtype(
+              {flattenedInputSize}, inputType.getOptionalDtype()));
+
+      Value end = rewriter.create<ConstantIntOp>(
+          loc, rewriter.getI64IntegerAttr(inputRank - 1));
+      input = rewriter.create<AtenFlattenUsingIntsOp>(loc, flattenedInputTy,
+                                                      input, cstZero, end);
+    }
+
+    Value cstOne =
+        rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(1));
+    Value cstMinusOne =
+        rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(-1));
+
+    SmallVector<int64_t> viewShapeInts(resultRank, 1);
+    SmallVector<Value> viewShapeListElems(resultRank, cstOne);
+
+    auto si64Type = IntegerType::get(context, 64, IntegerType::Signed);
+    Value finalIndices;
+    for (unsigned dim = 0; dim < sizesInts.size(); dim++) {
+      int64_t size = sizesInts[dim];
+      Value cstNone = rewriter.create<ConstantNoneOp>(loc);
+      Value end =
+          rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(size));
+
+      auto arangeType =
+          ValueTensorType::get(context, llvm::ArrayRef(size), si64Type);
+      Value index = rewriter.create<Torch::AtenArangeOp>(
+          loc, arangeType, end, cstNone, cstNone, cstNone, cstNone);
+
+      // Set the current dimension to -1 for broadcasting
+      viewShapeInts[dim] = -1;
+      viewShapeListElems[dim] = cstMinusOne;
+
+      Value viewShapeList = rewriter.create<Torch::PrimListConstructOp>(
+          loc, Torch::ListType::get(Torch::IntType::get(context)),
+          viewShapeListElems);
+
+      auto viewType = ValueTensorType::get(
+          context, llvm::ArrayRef(viewShapeInts), si64Type);
+      index = rewriter.create<AtenViewOp>(loc, viewType, index, viewShapeList);
+
+      // Multiply the index with the stride for the current dimension
+      Value cstStride = rewriter.create<ConstantIntOp>(
+          loc, rewriter.getI64IntegerAttr(stridesInts[dim]));
+      index = rewriter.create<AtenMulScalarOp>(loc, viewType, index, cstStride);
+
+      // Reset the current dimension to 1 for the next iteration
+      viewShapeInts[dim] = 1;
+      viewShapeListElems[dim] = cstOne;
+
+      if (dim == 0) {
+        finalIndices = index;
+        continue;
+      }
+
+      // calculate common shape for broadcast
+      SmallVector<int64_t> broadcastShape;
+      SmallVector<Value> broadcastShapeValue;
+      computeBroadcastShape(rewriter, loc, {finalIndices, index},
+                            broadcastShape, broadcastShapeValue);
+      Type broadcastType = ValueTensorType::get(
+          context, llvm::ArrayRef(broadcastShape), si64Type);
+
+      finalIndices = rewriter.create<AtenAddTensorOp>(
+          loc, broadcastType, finalIndices, index, cstOne);
+    }
+
+    int64_t flattenedResultSize = 1;
+    for (int64_t size : sizesInts)
+      flattenedResultSize *= size;
+
+    // Flattening the indices and adding the storage offset
+    finalIndices = rewriter.create<AtenFlattenUsingIntsOp>(
+        loc,
+        ValueTensorType::get(context, llvm::ArrayRef(flattenedResultSize),
+                             si64Type),
+        finalIndices, cstZero, cstMinusOne); // -1 means flatten all
+
+    if (storageOffset != 0) {
+      Value cstStorageOffset = rewriter.create<ConstantIntOp>(
+          loc, rewriter.getI64IntegerAttr(storageOffset));
+      finalIndices = rewriter.create<AtenAddScalarOp>(
+          loc, finalIndices.getType(), finalIndices, cstStorageOffset, cstOne);
+    }
+
+    // Index the flattened input tensor
+    Type listElemType =
+        inputType.getWithSizesAndDtype(/*optionalSizes=*/std::nullopt,
+                                       /*optionalDtype=*/nullptr);
+    Value indicesList = rewriter.create<Torch::PrimListConstructOp>(
+        loc, Torch::ListType::get(listElemType),
+        SmallVector<Value>{finalIndices});
+
+    auto flattenedResultTy =
+        ValueTensorType::get(context, llvm::ArrayRef(flattenedResultSize),
+                             inputType.getOptionalDtype());
+    Value result = rewriter.create<AtenIndexTensorOp>(loc, flattenedResultTy,
+                                                      input, indicesList);
+
+    // Reshape the result to the desired output size
+    SmallVector<Value> sizesIntsValues;
+    for (int64_t size : sizesInts) {
+      sizesIntsValues.push_back(rewriter.create<ConstantIntOp>(
+          loc, rewriter.getI64IntegerAttr(size)));
+    }
+    Value resultSizeList = rewriter.create<Torch::PrimListConstructOp>(
+        loc, Torch::ListType::get(Torch::IntType::get(context)),
+        sizesIntsValues);
+    result =
+        rewriter.create<AtenViewOp>(loc, op.getType(), result, resultSizeList);
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 class DecomposeComplexOpsPass
     : public DecomposeComplexOpsBase<DecomposeComplexOpsPass> {
 private:
@@ -12491,6 +13007,12 @@ public:
     addPatternIfTargetOpIsIllegal<DecomposeAtenExpandOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenFlattenUsingIntsOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenUnflattenIntOp>(patterns);
+    addPatternIfTargetOpIsIllegal<
+        DecomposeAtenUpsampleNearestVecOp<AtenUpsampleNearest1dVecOp>>(
+        patterns);
+    addPatternIfTargetOpIsIllegal<
+        DecomposeAtenUpsampleNearestVecOp<AtenUpsampleNearest2dVecOp>>(
+        patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenWhereScalarOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenWhereScalarOtherOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenWhereScalarSelfOp>(patterns);
@@ -12514,6 +13036,8 @@ public:
     addPatternIfTargetOpIsIllegal<DecomposeAtenRenormOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenLinalgCrossOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenPixelShuffleOp>(patterns);
+    addPatternIfTargetOpIsIllegal<DecomposeAtenPixelUnshuffleOp>(patterns);
+    addPatternIfTargetOpIsIllegal<DecomposeAtenChannelShuffleOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenTOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAten_LogSoftmaxBackwardDataOp>(
         patterns);
@@ -12628,6 +13152,7 @@ public:
         DecomposeAtenAdaptivePool2dOp<AtenAdaptiveMaxPool2dOp>>(patterns);
     addPatternIfTargetOpIsIllegal<
         DecomposeAtenAdaptivePool2dOp<AtenAdaptiveAvgPool2dOp>>(patterns);
+    addPatternIfTargetOpIsIllegal<DecomposeAtenBroadcastTensorsOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenClampMinOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenClampMinTensorOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenClampMaxOp>(patterns);
@@ -12750,6 +13275,7 @@ public:
         patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAten_AssertScalarOp>(patterns);
     addPatternIfTargetOpIsIllegal<DecomposeAtenRoundDecimalsOp>(patterns);
+    addPatternIfTargetOpIsIllegal<DecomposeAtenAsStridedOp>(patterns);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
