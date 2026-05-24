@@ -4136,21 +4136,26 @@ LogicalResult ConvertAtenOp<AtenViewOp>::matchAndRewriteImpl(
   }
 
   auto inputShape = selfType.getShape();
-  size_t totalSize = 1;
-  for (size_t i = 0; i < inputShape.size(); i++) {
-    totalSize *= inputShape[i];
-  }
-
-  size_t otherSize = 1;
-  for (size_t i = 0; i < outShape.size(); i++) {
-    if (outShape[i] > 0) {
-      otherSize *= outShape[i];
+  // Only resolve the -1 sentinel statically when every input dim is known;
+  // otherwise leave it for tosa.reshape to infer at runtime.
+  bool inputFullyStatic = llvm::none_of(inputShape, ShapedType::isDynamic);
+  if (inputFullyStatic) {
+    size_t totalSize = 1;
+    for (size_t i = 0; i < inputShape.size(); i++) {
+      totalSize *= inputShape[i];
     }
-  }
-  for (size_t i = 0; i < outShape.size(); i++) {
-    if (outShape[i] < 0) {
-      outShape[i] = totalSize / otherSize;
-      break;
+
+    size_t otherSize = 1;
+    for (size_t i = 0; i < outShape.size(); i++) {
+      if (outShape[i] > 0) {
+        otherSize *= outShape[i];
+      }
+    }
+    for (size_t i = 0; i < outShape.size(); i++) {
+      if (outShape[i] < 0) {
+        outShape[i] = totalSize / otherSize;
+        break;
+      }
     }
   }
 
