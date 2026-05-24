@@ -10345,13 +10345,18 @@ class ConvertDequantizeOp : public TorchToTosaOpConversionPattern<AtenOpT> {
     Value intValue = tosa::CastOp::create(rewriter, loc, intTensorTy, qtensor);
 
     // Helper to align quantization axis for broadcasting
-    auto alignQuantParamRankAndCast = [&](Value quantParam,
-                                          Type targetElemTy) -> Value {
+    auto alignQuantParamRankAndCast =
+        [&](Value quantParam, Type targetElemTy,
+            StringRef paramName) -> FailureOr<Value> {
+      auto quantParamTy = dyn_cast<RankedTensorType>(quantParam.getType());
+      if (!quantParamTy) {
+        (void)rewriter.notifyMatchFailure(
+            op, "non-constant per-tensor " + paramName + " is not supported");
+        return failure();
+      }
       // Cast the 1-D tensor to the target element type.
       auto castedTensor = tosa::CastOp::create(
-          rewriter, loc,
-          cast<RankedTensorType>(quantParam.getType()).clone(targetElemTy),
-          quantParam);
+          rewriter, loc, quantParamTy.clone(targetElemTy), quantParam);
       auto castedTensorTy = cast<RankedTensorType>(castedTensor.getType());
 
       // Reshape the 1-D tensor to have the same rank as the input.
@@ -10365,8 +10370,9 @@ class ConvertDequantizeOp : public TorchToTosaOpConversionPattern<AtenOpT> {
           castedTensorTy.getShape()[0]; // quantization params is 1D
       auto reshapeTy = RankedTensorType::get(reshapeShape, targetElemTy);
       return tosa::ReshapeOp::create(
-          rewriter, loc, reshapeTy, castedTensor,
-          tosa::getTosaConstShape(rewriter, loc, reshapeShape));
+                 rewriter, loc, reshapeTy, castedTensor,
+                 tosa::getTosaConstShape(rewriter, loc, reshapeShape))
+          .getResult();
     };
 
     // Handle Zero Point
@@ -10388,7 +10394,10 @@ class ConvertDequantizeOp : public TorchToTosaOpConversionPattern<AtenOpT> {
       // Reshape to match rank and cast it to the intermediate integer type.
       zp = converter->materializeTargetConversion(
           rewriter, loc, converter->convertType(zp.getType()), zp);
-      intZp = alignQuantParamRankAndCast(zp, elemIntTy);
+      auto intZpOr = alignQuantParamRankAndCast(zp, elemIntTy, "zero_point");
+      if (failed(intZpOr))
+        return failure();
+      intZp = *intZpOr;
     }
 
     // Subtract: (value - zero_point)
@@ -10420,7 +10429,10 @@ class ConvertDequantizeOp : public TorchToTosaOpConversionPattern<AtenOpT> {
       // Reshape to match rank and cast it to the result float type.
       scale = converter->materializeTargetConversion(
           rewriter, loc, converter->convertType(scale.getType()), scale);
-      floatScale = alignQuantParamRankAndCast(scale, elemFpTy);
+      auto floatScaleOr = alignQuantParamRankAndCast(scale, elemFpTy, "scale");
+      if (failed(floatScaleOr))
+        return failure();
+      floatScale = *floatScaleOr;
     }
 
     auto mulResult = tosa::createMulOpAndCast(
