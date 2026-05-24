@@ -10388,6 +10388,15 @@ class ConvertDequantizeOp : public TorchToTosaOpConversionPattern<AtenOpT> {
       // Reshape to match rank and cast it to the intermediate integer type.
       zp = converter->materializeTargetConversion(
           rewriter, loc, converter->convertType(zp.getType()), zp);
+      // Per-tensor dynamic-quant cases lower zero_point through aten.item
+      // -> !torch.int. The materialized value is then a scalar (not a
+      // RankedTensorType), and alignQuantParamRankAndCast would crash in
+      // its cast<RankedTensorType>. Bail out gracefully so the downstream
+      // legalization can surface a real diagnostic instead of an assert.
+      if (!isa<RankedTensorType>(zp.getType()))
+        return rewriter.notifyMatchFailure(
+            op, "non-constant per-tensor zero_point (e.g. from "
+                "aten.item) is not supported by this lowering");
       intZp = alignQuantParamRankAndCast(zp, elemIntTy);
     }
 
@@ -10420,6 +10429,11 @@ class ConvertDequantizeOp : public TorchToTosaOpConversionPattern<AtenOpT> {
       // Reshape to match rank and cast it to the result float type.
       scale = converter->materializeTargetConversion(
           rewriter, loc, converter->convertType(scale.getType()), scale);
+      // Same scalar-materialization bail-out as the zero_point branch.
+      if (!isa<RankedTensorType>(scale.getType()))
+        return rewriter.notifyMatchFailure(
+            op, "non-constant per-tensor scale (e.g. from aten.item) is "
+                "not supported by this lowering");
       floatScale = alignQuantParamRankAndCast(scale, elemFpTy);
     }
 
