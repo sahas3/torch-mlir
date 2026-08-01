@@ -1011,7 +1011,9 @@ class QuantizedReluInt32(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: QuantizedReluInt32())
 def QuantizedReluInt32_basic(module, tu: TestUtils):
-    module.forward(tu.randint(7, 4, low=(-(2**31)), high=(2**31 - 1)).to(torch.int32))
+    module.forward(
+        tu.randint(7, 4, low=(-(2**31)), high=(2**31 - 1)).to(torch.int32)
+    )
 
 
 # ==============================================================================
@@ -2511,6 +2513,31 @@ class ElementwiseMulScalarModule(torch.nn.Module):
 @register_test_case(module_factory=lambda: ElementwiseMulScalarModule())
 def ElementwiseMulScalarModule_basic(module, tu: TestUtils):
     module.forward(tu.randint(3, 4, high=10).to(torch.int32))
+
+
+# ==============================================================================
+
+
+# si8 constant-fold with overflow — scalar i64 is narrowed to si8 via
+# truncation (PyTorch wrapping semantics): 100+100=200 wraps to -56 in si8.
+class ElementwiseMulScalarModule_si8_overflow(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.x = torch.tensor([100, -100], dtype=torch.int8)
+
+    @export
+    @annotate_args(
+        [
+            None,
+        ]
+    )
+    def forward(self):
+        return self.x + self.x
+
+
+@register_test_case(module_factory=lambda: ElementwiseMulScalarModule_si8_overflow())
+def ElementwiseMulScalarModule_si8_overflow_basic(module, tu: TestUtils):
+    module.forward()
 
 
 # ==============================================================================

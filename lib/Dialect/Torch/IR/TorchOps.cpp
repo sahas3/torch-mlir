@@ -1510,14 +1510,18 @@ static bool checkAllSplats(llvm::ArrayRef<Attribute> attrs) {
   return true;
 }
 
+// Returns true when an IntegerType requires unsigned arithmetic semantics.
+// Explicitly unsigned types and signless i1 (bool) use unsigned: under signed
+// compare, bit 1 is -1, so e.g. APInt(1,1).getSExtValue() returns allOnes.
+// TODO: replace with Torch::useUnsignedIntegerSemantics once the bool-reduction
+// branch is merged.
+static bool useUnsignedIntegerSemantics(IntegerType ity) {
+  return ity.isUnsigned() || ity.getWidth() == 1;
+}
+
 llvm::SmallVector<double> getFoldValueAtIndexFp(llvm::ArrayRef<Attribute> attrs,
                                                 int64_t idx = 0) {
   llvm::SmallVector<double> splattrs;
-
-  // Note that i1 is neither signed nor unsigned.
-  // But we should trait i1 as unsigned, otherwise that
-  // APInt(1,1).getSExtValue() return allOnes 64-bit integer.
-  // So here only distinguish signed integer.
   auto convertAPIntToDouble = [](APInt value, bool isSigned) -> double {
     if (isSigned)
       return static_cast<double>(value.getSExtValue());
@@ -1533,7 +1537,8 @@ llvm::SmallVector<double> getFoldValueAtIndexFp(llvm::ArrayRef<Attribute> attrs,
         splattrs.push_back(dense.getValues<APFloat>()[idx].convertToDouble());
       }
     } else if (auto dense = dyn_cast<DenseIntElementsAttr>(attr)) {
-      bool isSigned = cast<IntegerType>(dense.getElementType()).isSigned();
+      IntegerType ety = cast<IntegerType>(dense.getElementType());
+      bool isSigned = !useUnsignedIntegerSemantics(ety);
       if (dense.isSplat()) {
         splattrs.push_back(
             convertAPIntToDouble(dense.getSplatValue<APInt>(), isSigned));
@@ -1544,7 +1549,8 @@ llvm::SmallVector<double> getFoldValueAtIndexFp(llvm::ArrayRef<Attribute> attrs,
     } else if (auto fpattr = dyn_cast<FloatAttr>(attr)) {
       splattrs.push_back(fpattr.getValueAsDouble());
     } else if (auto intattr = dyn_cast<IntegerAttr>(attr)) {
-      bool isSigned = cast<IntegerType>(intattr.getType()).isSigned();
+      IntegerType ity = cast<IntegerType>(intattr.getType());
+      bool isSigned = !useUnsignedIntegerSemantics(ity);
       splattrs.push_back(convertAPIntToDouble(intattr.getValue(), isSigned));
     } else {
       return {};
@@ -1562,25 +1568,25 @@ llvm::SmallVector<APInt> getFoldValueAtIndexInt(llvm::ArrayRef<Attribute> attrs,
   for (auto attr : attrs) {
     bool isSigned = false;
     if (auto dense = dyn_cast<DenseIntElementsAttr>(attr)) {
-      isSigned = cast<IntegerType>(dense.getElementType()).isSigned();
+      isSigned = !useUnsignedIntegerSemantics(
+          cast<IntegerType>(dense.getElementType()));
       if (dense.isSplat()) {
         splattrs.push_back(dense.getSplatValue<APInt>());
       } else {
         splattrs.push_back(dense.getValues<APInt>()[idx]);
       }
     } else if (auto intattr = dyn_cast<IntegerAttr>(attr)) {
-      isSigned = cast<IntegerType>(intattr.getType()).isSigned();
+      isSigned =
+          !useUnsignedIntegerSemantics(cast<IntegerType>(intattr.getType()));
       splattrs.push_back(intattr.getValue());
     } else {
       return {};
     }
 
-    // Note that i1 is neither signed nor unsigned.
-    // But we should trait i1 as unsigned, otherwise that
-    // APInt(1,1).getSExtValue() return allOnes 64-bit integer.
-    // So here only distinguish signed integer.
+    // Resize to result element width. Narrowing truncates high bits, matching
+    // PyTorch's wrapping-on-overflow semantics (e.g. i64(200) -> si8(-56)).
     auto &apint = splattrs.back();
-    if (apint.getBitWidth() < bitwidth) {
+    if (apint.getBitWidth() != static_cast<unsigned>(bitwidth)) {
       if (isSigned) {
         apint = apint.sextOrTrunc(bitwidth);
       } else {

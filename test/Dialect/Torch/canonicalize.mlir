@@ -2453,6 +2453,83 @@ func.func @torch.aten.mul.Scalar$canonicalize_numtotensor_0d() -> !torch.vtensor
     return %2 : !torch.vtensor<[],si64>
 }
 
+// CHECK-LABEL:   func.func @torch.aten.mul.Scalar$fold_fp_tensor_signless_int_neg1() -> !torch.vtensor<[1],f32> {
+// CHECK:             %[[CST:.+]] = torch.vtensor.literal(dense<1.76582587> : tensor<1xf32>) : !torch.vtensor<[1],f32>
+// CHECK:             return %[[CST]] : !torch.vtensor<[1],f32>
+func.func @torch.aten.mul.Scalar$fold_fp_tensor_signless_int_neg1() -> !torch.vtensor<[1],f32> {
+    %0 = torch.vtensor.literal(dense<-1.76582587> : tensor<1xf32>) : !torch.vtensor<[1],f32>
+    %int-1 = torch.constant.int -1
+    %1 = torch.aten.mul.Scalar %0, %int-1 : !torch.vtensor<[1],f32>, !torch.int -> !torch.vtensor<[1],f32>
+    return %1 : !torch.vtensor<[1],f32>
+}
+
+// -----
+
+// Scalar i64 (-1) must be sign-extended/truncated to si32 before folding.
+// Previously the APInt width mismatch caused an assert crash.
+// CHECK-LABEL:   func.func @torch.aten.mul.Scalar$fold_si32_tensor_signless_int_neg1
+// CHECK:             %[[CST:.+]] = torch.vtensor.literal(dense<[-1, -2, -3, 4]> : tensor<4xsi32>)
+// CHECK:             return %[[CST]]
+func.func @torch.aten.mul.Scalar$fold_si32_tensor_signless_int_neg1() -> !torch.vtensor<[4],si32> {
+    %0 = torch.vtensor.literal(dense<[1, 2, 3, -4]> : tensor<4xsi32>) : !torch.vtensor<[4],si32>
+    %int-1 = torch.constant.int -1
+    %1 = torch.aten.mul.Scalar %0, %int-1 : !torch.vtensor<[4],si32>, !torch.int -> !torch.vtensor<[4],si32>
+    return %1 : !torch.vtensor<[4],si32>
+}
+
+// -----
+
+// CHECK-LABEL:   func.func @torch.aten.mul.Scalar$fold_si8_tensor_signless_int_neg1
+// CHECK:             %[[CST:.+]] = torch.vtensor.literal(dense<[-1, -2, -3, 4]> : tensor<4xsi8>)
+// CHECK:             return %[[CST]]
+func.func @torch.aten.mul.Scalar$fold_si8_tensor_signless_int_neg1() -> !torch.vtensor<[4],si8> {
+    %0 = torch.vtensor.literal(dense<[1, 2, 3, -4]> : tensor<4xsi8>) : !torch.vtensor<[4],si8>
+    %int-1 = torch.constant.int -1
+    %1 = torch.aten.mul.Scalar %0, %int-1 : !torch.vtensor<[4],si8>, !torch.int -> !torch.vtensor<[4],si8>
+    return %1 : !torch.vtensor<[4],si8>
+}
+
+// -----
+
+// i1 (bool) tensor × scalar 1 — zero-extension must keep true=1, not sign-extend to -1.
+// CHECK-LABEL:   func.func @torch.aten.mul.Scalar$fold_i1_tensor_by_one
+// CHECK:             %[[CST:.+]] = torch.vtensor.literal(dense<[true, false]> : tensor<2xi1>)
+// CHECK:             return %[[CST]]
+func.func @torch.aten.mul.Scalar$fold_i1_tensor_by_one() -> !torch.vtensor<[2],i1> {
+    %0 = torch.vtensor.literal(dense<[true, false]> : tensor<2xi1>) : !torch.vtensor<[2],i1>
+    %int1 = torch.constant.int 1
+    %1 = torch.aten.mul.Scalar %0, %int1 : !torch.vtensor<[2],i1>, !torch.int -> !torch.vtensor<[2],i1>
+    return %1 : !torch.vtensor<[2],i1>
+}
+
+// -----
+
+// ui8 tensor × scalar — zero-extension must preserve values >= 128.
+// CHECK-LABEL:   func.func @torch.aten.mul.Scalar$fold_ui8_tensor_large_scalar
+// CHECK:             %[[CST:.+]] = torch.vtensor.literal(dense<[200, 144]> : tensor<2xui8>)
+// CHECK:             return %[[CST]]
+func.func @torch.aten.mul.Scalar$fold_ui8_tensor_large_scalar() -> !torch.vtensor<[2],ui8> {
+    %0 = torch.vtensor.literal(dense<[200, 144]> : tensor<2xui8>) : !torch.vtensor<[2],ui8>
+    %int1 = torch.constant.int 1
+    %1 = torch.aten.mul.Scalar %0, %int1 : !torch.vtensor<[2],ui8>, !torch.int -> !torch.vtensor<[2],ui8>
+    return %1 : !torch.vtensor<[2],ui8>
+}
+
+// -----
+
+// Multi-element fp tensor exercises the element-iteration path (not splat).
+// CHECK-LABEL:   func.func @torch.aten.mul.Scalar$fold_fp_tensor_multi_element
+// CHECK:             %[[CST:.+]] = torch.vtensor.literal(dense<[-1.000000e+00, -2.000000e+00, -3.000000e+00]> : tensor<3xf32>)
+// CHECK:             return %[[CST]]
+func.func @torch.aten.mul.Scalar$fold_fp_tensor_multi_element() -> !torch.vtensor<[3],f32> {
+    %0 = torch.vtensor.literal(dense<[1.0, 2.0, 3.0]> : tensor<3xf32>) : !torch.vtensor<[3],f32>
+    %int-1 = torch.constant.int -1
+    %1 = torch.aten.mul.Scalar %0, %int-1 : !torch.vtensor<[3],f32>, !torch.int -> !torch.vtensor<[3],f32>
+    return %1 : !torch.vtensor<[3],f32>
+}
+
+// -----
+
 // CHECK-LABEL:   func.func @torch.aten.mul.Tensor$canonicalize_literal_0d() -> !torch.vtensor<[],si64> {
 // CHECK:             %[[CST:.+]] = torch.vtensor.literal(dense<6> : tensor<si64>) : !torch.vtensor<[],si64>
 // CHECK:             return %[[CST]] : !torch.vtensor<[],si64>
