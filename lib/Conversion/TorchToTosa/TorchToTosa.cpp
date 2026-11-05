@@ -1893,6 +1893,22 @@ public:
         result = divResult.getResult();
       }
     } else {
+      // Widen the operands to the compute type here, following the signedness
+      // of their torch dtypes, so that unsigned values are zero-extended.
+      auto isUnsignedDtype = [](Value value) {
+        auto tensorType = dyn_cast<ValueTensorType>(value.getType());
+        return tensorType && tensorType.hasDtype() &&
+               tensorType.getDtype().isUnsignedInteger();
+      };
+      bool lhsUnsigned = isUnsignedDtype(op.getSelf());
+      bool rhsUnsigned = rhsTy ? isUnsignedDtype(op.getOther()) : lhsUnsigned;
+      auto computeType = getIntDivComputeType(outType, rewriter);
+      lhs = tosa::tosaCastTensorToType(rewriter, lhs, computeType, lhsUnsigned)
+                .value();
+      rhsTensor = tosa::tosaCastTensorToType(rewriter, rhsTensor, computeType,
+                                             rhsUnsigned)
+                      .value();
+
       if (roundMode.compare("floor") == 0) {
         // "floor": rounds the results of the division down. Equivalent to floor
         // division in Python (the // operator).
@@ -1901,11 +1917,6 @@ public:
         // "trunc": rounds the results of the division towards zero. Equivalent
         // to C-style integer division.
         // None: no rounding mode.
-
-        auto computeType = getIntDivComputeType(outType, rewriter);
-        lhs = tosa::tosaCastTensorToType(rewriter, lhs, computeType).value();
-        rhsTensor = tosa::tosaCastTensorToType(rewriter, rhsTensor, computeType)
-                        .value();
 
         auto intDivOp = tosa::IntDivOp::create(rewriter, op->getLoc(),
                                                computeType, lhs, rhsTensor);
@@ -8592,8 +8603,15 @@ LogicalResult ConvertAtenOp<AtenToDtypeOp>::matchAndRewriteImpl(
   auto resultTy = cast<RankedTensorType>(
       getTypeConverter()->convertType(op.getResult().getType()));
 
+  bool selfUnsigned = cast<BaseTensorType>(op.getSelf().getType())
+                          .getDtype()
+                          .isUnsignedInteger();
+  bool resultUnsigned =
+      cast<BaseTensorType>(op.getType()).getDtype().isUnsignedInteger();
   Value result =
-      tosa::tosaCastTensorToType(rewriter, adaptor.getSelf(), resultTy).value();
+      tosa::tosaCastTensorToType(rewriter, adaptor.getSelf(), resultTy,
+                                 selfUnsigned, resultUnsigned)
+          .value();
 
   rewriter.replaceOp(op, result);
   return success();

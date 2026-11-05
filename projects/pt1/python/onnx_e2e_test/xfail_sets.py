@@ -36,9 +36,6 @@ ONNX_E2E_LINALG_CRASHING_SET = set()
 # TOSA has different op coverage than linalg; tests unsupported on the
 # torch -> tosa path go here.
 ONNX_E2E_TOSA_XFAIL_SET = {
-    # torch -> tosa divides i8 tensors as signed, so unsigned integer Div gives
-    # wrong results for dividends above 127.
-    "OnnxDiv_ui8_basic",
     # TOSA per-tensor DQ gives incorrect numerical results for uint8 inputs
     # above 127. Keep the full unsigned range in these tests to expose it.
     "OnnxMatMulIntegerToFloat_aZeroPoint",

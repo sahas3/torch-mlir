@@ -74,9 +74,13 @@ getSplatConstTensor(PatternRewriter &rewriter, Operation *op, T value,
                     ArrayRef<int64_t> shape, std::optional<Type> dtype = {});
 
 // Default function to create tosa.cast op. This should be called instead of
-// directly calling rewriter.create<tosa::CastOp>.
+// directly calling rewriter.create<tosa::CastOp>. Builtin integer types are
+// signless, so `inputUnsigned` and `outputUnsigned` give the signedness of
+// integer `src` and `destType` elements.
 std::optional<Value> tosaCastTensorToType(PatternRewriter &rewriter, Value src,
-                                          TensorType destType);
+                                          TensorType destType,
+                                          bool inputUnsigned = false,
+                                          bool outputUnsigned = false);
 
 // Ensure TOSA argmax input is f32 by inserting a tosa.cast when needed.
 Value legalizeArgMaxInputType(PatternRewriter &rewriter, Operation *op,
