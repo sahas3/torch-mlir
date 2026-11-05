@@ -250,3 +250,18 @@ func.func @elementwise_div_tensor_mode_floor_unsigned(%arg0: !torch.vtensor<[?],
   %0 = torch.aten.div.Tensor_mode %arg0, %arg1, %str : !torch.vtensor<[?],ui8>, !torch.vtensor<[?],ui8>, !torch.str -> !torch.vtensor<[?],ui8>
   return %0 : !torch.vtensor<[?],ui8>
 }
+
+// -----
+
+// CHECK-LABEL:   func.func @elementwise_to_dtype_f32_to_ui8(
+// CHECK:           linalg.generic
+// CHECK:           ^bb0(%[[IN:.*]]: f32, %{{.*}}: i8):
+// CHECK-NOT:         arith.fptosi
+// CHECK:             arith.fptoui %[[IN]] : f32 to i8
+func.func @elementwise_to_dtype_f32_to_ui8(%arg0: !torch.vtensor<[?],f32>) -> !torch.vtensor<[?],ui8> {
+  %int0 = torch.constant.int 0
+  %false = torch.constant.bool false
+  %none = torch.constant.none
+  %0 = torch.aten.to.dtype %arg0, %int0, %false, %false, %none : !torch.vtensor<[?],f32>, !torch.int, !torch.bool, !torch.bool, !torch.none -> !torch.vtensor<[?],ui8>
+  return %0 : !torch.vtensor<[?],ui8>
+}

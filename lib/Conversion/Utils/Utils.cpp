@@ -370,8 +370,11 @@ Value convertScalarToDtype(OpBuilder &b, Location loc, Value scalar, Type dtype,
   }
 
   if (auto dtypeInteger = dyn_cast<mlir::IntegerType>(dtype)) {
-    if (auto scalarFloat = dyn_cast<mlir::FloatType>(scalarType))
+    if (auto scalarFloat = dyn_cast<mlir::FloatType>(scalarType)) {
+      if (dstOriginalDtype.has_value() && dstOriginalDtype->isUnsignedInteger())
+        return arith::FPToUIOp::create(b, loc, dtype, scalar);
       return arith::FPToSIOp::create(b, loc, dtype, scalar);
+    }
     assert(isa<mlir::IntegerType>(scalarType));
     auto scalarInteger = cast<mlir::IntegerType>(scalarType);
     if (scalarInteger.getWidth() > dtypeInteger.getWidth())
