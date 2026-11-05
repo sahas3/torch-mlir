@@ -5671,6 +5671,63 @@ def ElementwiseDivTensorRoundingModeFloorIntStaticModule_basic(module, tu: TestU
     )
 
 
+# Integer division of uint8 tensors. The dividends are above 127, where signed
+# division gives different results. The results are returned as int64 so that
+# backends without unsigned function results can run the tests too.
+
+
+class ElementwiseDivTensorRoundingModeTruncUnsignedModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args(
+        [
+            None,
+            ([3, 4], torch.uint8, True),
+            ([3, 4], torch.uint8, True),
+        ]
+    )
+    def forward(self, a, b):
+        return torch.div(a, b, rounding_mode="trunc").to(torch.int64)
+
+
+@register_test_case(
+    module_factory=lambda: ElementwiseDivTensorRoundingModeTruncUnsignedModule()
+)
+def ElementwiseDivTensorRoundingModeTruncUnsignedModule_basic(module, tu: TestUtils):
+    module.forward(
+        tu.randint(3, 4, low=128, high=256).type(torch.uint8),
+        tu.randint(3, 4, low=1, high=10).type(torch.uint8),
+    )
+
+
+class ElementwiseDivTensorRoundingModeFloorUnsignedModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args(
+        [
+            None,
+            ([3, 4], torch.uint8, True),
+            ([3, 4], torch.uint8, True),
+        ]
+    )
+    def forward(self, a, b):
+        return torch.div(a, b, rounding_mode="floor").to(torch.int64)
+
+
+@register_test_case(
+    module_factory=lambda: ElementwiseDivTensorRoundingModeFloorUnsignedModule()
+)
+def ElementwiseDivTensorRoundingModeFloorUnsignedModule_basic(module, tu: TestUtils):
+    module.forward(
+        tu.randint(3, 4, low=128, high=256).type(torch.uint8),
+        tu.randint(3, 4, low=1, high=10).type(torch.uint8),
+    )
+
+
 # ==============================================================================
 
 

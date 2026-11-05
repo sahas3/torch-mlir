@@ -209,3 +209,44 @@ func.func @elementwise_bitwise_right_shift_tensor_unsigned(%arg0: !torch.vtensor
   %0 = torch.aten.bitwise_right_shift.Tensor %arg0, %arg1 : !torch.vtensor<[?],ui8>, !torch.vtensor<[?],ui8> -> !torch.vtensor<[?],ui8>
   return %0 : !torch.vtensor<[?],ui8>
 }
+
+// -----
+
+// CHECK-LABEL:   func.func @elementwise_div_tensor_unsigned(
+// CHECK:           linalg.generic
+// CHECK:           ^bb0(%[[LHS:.*]]: i8, %[[RHS:.*]]: i8, %{{.*}}: i8):
+// CHECK-NOT:         arith.divsi %[[LHS]]
+// CHECK:             arith.divui %[[LHS]], %[[RHS]] : i8
+func.func @elementwise_div_tensor_unsigned(%arg0: !torch.vtensor<[?],ui8>, %arg1: !torch.vtensor<[?],ui8>) -> !torch.vtensor<[?],ui8> {
+  %0 = torch.aten.div.Tensor %arg0, %arg1 : !torch.vtensor<[?],ui8>, !torch.vtensor<[?],ui8> -> !torch.vtensor<[?],ui8>
+  return %0 : !torch.vtensor<[?],ui8>
+}
+
+// -----
+
+// CHECK-LABEL:   func.func @elementwise_div_tensor_mode_trunc_unsigned(
+// CHECK:           linalg.generic
+// CHECK:           ^bb0(%[[LHS:.*]]: i8, %[[RHS:.*]]: i8, %{{.*}}: i8):
+// CHECK-NOT:         arith.divsi %[[LHS]]
+// CHECK:             arith.divui %[[LHS]], %[[RHS]] : i8
+func.func @elementwise_div_tensor_mode_trunc_unsigned(%arg0: !torch.vtensor<[?],ui8>, %arg1: !torch.vtensor<[?],ui8>) -> !torch.vtensor<[?],ui8> {
+  %str = torch.constant.str "trunc"
+  %0 = torch.aten.div.Tensor_mode %arg0, %arg1, %str : !torch.vtensor<[?],ui8>, !torch.vtensor<[?],ui8>, !torch.str -> !torch.vtensor<[?],ui8>
+  return %0 : !torch.vtensor<[?],ui8>
+}
+
+// -----
+
+// Floor division of unsigned integers is the same as truncating division.
+// CHECK-LABEL:   func.func @elementwise_div_tensor_mode_floor_unsigned(
+// CHECK:           linalg.generic
+// CHECK:           ^bb0(%[[LHS:.*]]: i8, %[[RHS:.*]]: i8, %{{.*}}: i8):
+// CHECK-NOT:         arith.divsi %[[LHS]]
+// CHECK-NOT:         arith.sitofp
+// CHECK:             arith.divui %[[LHS]], %[[RHS]] : i8
+// CHECK-NEXT:        linalg.yield
+func.func @elementwise_div_tensor_mode_floor_unsigned(%arg0: !torch.vtensor<[?],ui8>, %arg1: !torch.vtensor<[?],ui8>) -> !torch.vtensor<[?],ui8> {
+  %str = torch.constant.str "floor"
+  %0 = torch.aten.div.Tensor_mode %arg0, %arg1, %str : !torch.vtensor<[?],ui8>, !torch.vtensor<[?],ui8>, !torch.str -> !torch.vtensor<[?],ui8>
+  return %0 : !torch.vtensor<[?],ui8>
+}

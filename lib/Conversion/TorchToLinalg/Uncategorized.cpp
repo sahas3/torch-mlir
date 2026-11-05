@@ -254,6 +254,9 @@ Value createDivModePayload(OpBuilder &b, Location loc,
   typename OpT::Adaptor adaptor(operands);
   Type dtype = cast<RankedTensorType>(converter->convertType(op.getType()))
                    .getElementType();
+  // The builtin element type is signless; signedness comes from the dtype.
+  bool isUnsigned =
+      cast<ValueTensorType>(op.getType()).getDtype().isUnsignedInteger();
   Value lhs = convertScalarToDtype(b, loc, payloadArgs[0], dtype);
   Value rhs = convertScalarToDtype(
       b, loc,
@@ -263,7 +266,7 @@ Value createDivModePayload(OpBuilder &b, Location loc,
   Value quotient;
   if (isa<mlir::FloatType>(dtype)) {
     quotient = arith::DivFOp::create(b, loc, lhs, rhs);
-  } else if (dtype.isUnsignedInteger()) {
+  } else if (isUnsigned) {
     quotient = arith::DivUIOp::create(b, loc, lhs, rhs);
   } else {
     assert(dtype.isInteger() &&
@@ -302,7 +305,7 @@ Value createDivModePayload(OpBuilder &b, Location loc,
     // floor division in Python (the // operator)
     if (isa<mlir::FloatType>(dtype))
       return math::FloorOp::create(b, loc, quotient);
-    if (!dtype.isUnsignedInteger()) {
+    if (!isUnsigned) {
       Type defaultIntToFloatType = b.getF64Type();
       lhs = convertScalarToDtype(b, loc, lhs, defaultIntToFloatType);
       rhs = convertScalarToDtype(b, loc, rhs, defaultIntToFloatType);
@@ -1276,7 +1279,8 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
     if (isa<mlir::FloatType>(dtype))
       return arith::DivFOp::create(b, loc, lhs, rhs);
     else if (isa<mlir::IntegerType>(dtype)) {
-      if (dtype.isUnsignedInteger())
+      // The builtin element type is signless; signedness comes from the dtype.
+      if (cast<ValueTensorType>(div.getType()).getDtype().isUnsignedInteger())
         return arith::DivUIOp::create(b, loc, lhs, rhs);
       return arith::DivSIOp::create(b, loc, lhs, rhs);
     }
