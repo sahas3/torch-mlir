@@ -786,17 +786,6 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
                        std::to_string(wTy.getSizes()[1]) + ")");
   assertInputSizesMatch(b, X, W);
 
-  Value W_forward = getDirection(b, 0, W);
-  Value R_forward = getDirection(b, 0, R);
-  Value B_forward = getDirection(b, 0, B);
-
-  Value W_reverse, R_reverse, B_reverse;
-  if (isBidirectional) {
-    W_reverse = getDirection(b, 1, W);
-    R_reverse = getDirection(b, 1, R);
-    B_reverse = getDirection(b, 1, B);
-  }
-
   auto intType = b.getType<IntType>();
 
   Value cstNumDirections =
@@ -843,71 +832,24 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
 
   // X, initial_h, initial_c are now in layout 0
 
-  Value initial_h_forward = getDirection(b, 0, initial_h);
-  Value initial_c_forward = getDirection(b, 0, initial_c);
-
-  Value initial_h_reverse, initial_c_reverse;
-  if (isBidirectional) {
-    initial_h_reverse = getDirection(b, 1, initial_h);
-    initial_c_reverse = getDirection(b, 1, initial_c);
-  }
-
-  // Everything hereon is for the forward direction (unless in bidirectional if
-  // block), with the direction dimention squeezed out and all inputs in layout
-  // 0 format
-
-  LstmWeights weights, weightsRev; // weights and biases
-
   auto intConst = [&](int64_t val) {
     return ConstantIntOp::create(b, intType, b.getI64IntegerAttr(val));
   };
 
-  // split B into Wb and Rb
+  // B is split into Wb and Rb, and Wb, Rb, W and R into the i, o, f and c
+  // gates.
   Value inputWeightsEndIdx = intConst(4 * hidden_size);
   Value recurrentWeightsStartIdx = inputWeightsEndIdx;
   Value recurrentWeightsEndIdx = intConst(8 * hidden_size);
   auto biasType = b.getType<ValueTensorType>(
       llvm::SmallVector<int64_t>{hidden_size * 4}, wTy.getDtype());
-  // forward
-  Value Wb = AtenSliceTensorOp::create(b, biasType,
-                                       /*input=*/B_forward,
-                                       /*dim=*/cstZero,
-                                       /*start=*/cstZero,
-                                       /*end=*/inputWeightsEndIdx,
-                                       /*step=*/cstOne);
-  Value Rb = AtenSliceTensorOp::create(b, biasType,
-                                       /*input=*/B_forward,
-                                       /*dim=*/cstZero,
-                                       /*start=*/recurrentWeightsStartIdx,
-                                       /*end=*/recurrentWeightsEndIdx,
-                                       /*step=*/cstOne);
-  Value Wb_reverse, Rb_reverse;
-  if (isBidirectional) {
-    // reverse
-    Wb_reverse = AtenSliceTensorOp::create(b, biasType,
-                                           /*input=*/B_reverse,
-                                           /*dim=*/cstZero,
-                                           /*start=*/cstZero,
-                                           /*end=*/inputWeightsEndIdx,
-                                           /*step=*/cstOne);
-    Rb_reverse = AtenSliceTensorOp::create(b, biasType,
-                                           /*input=*/B_reverse,
-                                           /*dim=*/cstZero,
-                                           /*start=*/recurrentWeightsStartIdx,
-                                           /*end=*/recurrentWeightsEndIdx,
-                                           /*step=*/cstOne);
-  }
-
-  // gate splitting
   auto gateBiasType = b.getType<ValueTensorType>(
-      llvm::SmallVector<int64_t>{hidden_size},
-      cast<ValueTensorType>(Wb.getType()).getDtype());
+      llvm::SmallVector<int64_t>{hidden_size}, wTy.getDtype());
   auto gateWeightsTypeIH = b.getType<ValueTensorType>(
-      llvm::SmallVector<int64_t>{hidden_size, input_size},
-      cast<ValueTensorType>(W_forward.getType()).getDtype());
+      llvm::SmallVector<int64_t>{hidden_size, input_size}, wTy.getDtype());
   auto gateWeightsTypeHH = b.getType<ValueTensorType>(
       llvm::SmallVector<int64_t>{hidden_size, hidden_size},
-      cast<ValueTensorType>(R_forward.getType()).getDtype());
+      cast<ValueTensorType>(R.getType()).getDtype());
 
   Value inputGateWeightsEndIdx = intConst(hidden_size);
   Value outputGateWeightsEndIdx = intConst(2 * hidden_size);
@@ -923,55 +865,46 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
         slicerFunction(outputGateWeightsEndIdx, forgetGateWeightsEndIdx, WoB),
         slicerFunction(forgetGateWeightsEndIdx, cellGateWeightsEndIdx, WoB));
   };
-
   auto sliceGateBias = [&](Value startIdx, Value endIdx, Value WoB) {
     return AtenSliceTensorOp::create(b, gateBiasType, WoB, cstZero, startIdx,
                                      endIdx, cstOne);
   };
-  std::tie(weights.Wb_i, weights.Wb_o, weights.Wb_f, weights.Wb_c) =
-      sliceIOFC(sliceGateBias, Wb);
-
-  if (isBidirectional)
-    std::tie(weightsRev.Wb_i, weightsRev.Wb_o, weightsRev.Wb_f,
-             weightsRev.Wb_c) = sliceIOFC(sliceGateBias, Wb_reverse);
-
-  auto sliceGateBiasR = [&](Value startIdx, Value endIdx, Value WoB) {
-    return AtenSliceTensorOp::create(b, gateBiasType, WoB, cstZero, startIdx,
-                                     endIdx, cstOne);
-  };
-  std::tie(weights.Rb_i, weights.Rb_o, weights.Rb_f, weights.Rb_c) =
-      sliceIOFC(sliceGateBiasR, Rb);
-
-  if (isBidirectional)
-    std::tie(weightsRev.Rb_i, weightsRev.Rb_o, weightsRev.Rb_f,
-             weightsRev.Rb_c) = sliceIOFC(sliceGateBiasR, Rb_reverse);
-
   auto sliceGateWeightsIH = [&](Value startIdx, Value endIdx, Value WoB) {
     return AtenSliceTensorOp::create(b, gateWeightsTypeIH, WoB, cstZero,
                                      startIdx, endIdx, cstOne);
   };
-  std::tie(weights.W_i, weights.W_o, weights.W_f, weights.W_c) =
-      sliceIOFC(sliceGateWeightsIH, W_forward);
-
-  if (isBidirectional)
-    std::tie(weightsRev.W_i, weightsRev.W_o, weightsRev.W_f, weightsRev.W_c) =
-        sliceIOFC(sliceGateWeightsIH, W_reverse);
-
   auto sliceGateWeightsHH = [&](Value startIdx, Value endIdx, Value WoB) {
     return AtenSliceTensorOp::create(b, gateWeightsTypeHH, WoB, cstZero,
                                      startIdx, endIdx, cstOne);
   };
 
-  std::tie(weights.R_i, weights.R_o, weights.R_f, weights.R_c) =
-      sliceIOFC(sliceGateWeightsHH, R_forward);
+  // The weights and initial states of each direction, with the direction dim
+  // squeezed out.
+  SmallVector<LstmWeights> weights;
+  SmallVector<Value> initialHs, initialCs;
+  for (int64_t d = 0; d < num_directions; ++d) {
+    Value B_d = getDirection(b, d, B);
+    Value Wb = AtenSliceTensorOp::create(b, biasType, B_d, cstZero, cstZero,
+                                         inputWeightsEndIdx, cstOne);
+    Value Rb = AtenSliceTensorOp::create(b, biasType, B_d, cstZero,
+                                         recurrentWeightsStartIdx,
+                                         recurrentWeightsEndIdx, cstOne);
+    LstmWeights weights_d;
+    std::tie(weights_d.Wb_i, weights_d.Wb_o, weights_d.Wb_f, weights_d.Wb_c) =
+        sliceIOFC(sliceGateBias, Wb);
+    std::tie(weights_d.Rb_i, weights_d.Rb_o, weights_d.Rb_f, weights_d.Rb_c) =
+        sliceIOFC(sliceGateBias, Rb);
+    std::tie(weights_d.W_i, weights_d.W_o, weights_d.W_f, weights_d.W_c) =
+        sliceIOFC(sliceGateWeightsIH, getDirection(b, d, W));
+    std::tie(weights_d.R_i, weights_d.R_o, weights_d.R_f, weights_d.R_c) =
+        sliceIOFC(sliceGateWeightsHH, getDirection(b, d, R));
+    weights.push_back(weights_d);
+    initialHs.push_back(getDirection(b, d, initial_h));
+    initialCs.push_back(getDirection(b, d, initial_c));
+  }
 
-  if (isBidirectional)
-    std::tie(weightsRev.R_i, weightsRev.R_o, weightsRev.R_f, weightsRev.R_c) =
-        sliceIOFC(sliceGateWeightsHH, R_reverse);
-
-  LstmLayerOutput lstmLayerOutput =
-      lstm_layer(rewriter, loc, X, initial_h_forward, initial_c_forward,
-                 weights, activations);
+  LstmLayerOutput lstmLayerOutput = lstm_layer(
+      rewriter, loc, X, initialHs[0], initialCs[0], weights[0], activations);
 
   Value Y_h_result, Y_c_result, Y_result;
 
@@ -1016,9 +949,8 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
     dim0 = PrimListConstructOp::create(b, b.getType<ListType>(intType),
                                        SmallVector<Value>{cstZero});
     X_reverse = AtenFlipOp::create(b, xTy, X, dim0); // flip along seq_len dim
-    revLstmLayerOutput =
-        lstm_layer(rewriter, loc, X_reverse, initial_h_reverse,
-                   initial_c_reverse, weightsRev, activationsRev);
+    revLstmLayerOutput = lstm_layer(rewriter, loc, X_reverse, initialHs[1],
+                                    initialCs[1], weights[1], activationsRev);
 
     // unsqueeze  Y_rev, Y_h_rev, Y_c_rev
     Y_h_reverse = AtenUnsqueezeOp::create(b, Y_h_Y_c_uni_type,
