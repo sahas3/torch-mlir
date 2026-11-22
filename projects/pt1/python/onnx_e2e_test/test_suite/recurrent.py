@@ -358,3 +358,84 @@ class OnnxLSTM_dynamicAllDims(_OnnxLstmDynamicBase):
     @annotate_inputs([("X", torch.float32, [-1, -1, -1])])
     def graph(self):
         return self._graph()
+
+
+# ==============================================================================
+# LSTM, GRU and RNN reverse and bidirectional; hidden_size=3. X is the runtime
+# input. W/R/B and initial_h (and initial_c for LSTM) are random initializers
+# with separate values per direction, so taking the wrong direction's slice or
+# state changes the result. A -1 dim is symbolic and fed as size 2, so static
+# dims use other sizes. ONNX Runtime is the reference, as for the activation
+# tests.
+# ==============================================================================
+
+
+class _RecurrentDirectionTest(OnnxTestCase):
+    use_onnxruntime_reference = True
+    _OP = "LSTM"
+    _DIRECTION = "reverse"
+    # Run-time batch size: the static batch, or 2 for a symbolic batch.
+    _BATCH, _INPUT, _HIDDEN = 3, 5, 3
+
+    def _graph(self):
+        num_dir = 2 if self._DIRECTION == "bidirectional" else 1
+        gates = _GATES[self._OP] * self._HIDDEN
+        rng = np.random.default_rng(13)
+        arrays = {
+            "W": rng.standard_normal((num_dir, gates, self._INPUT)),
+            "R": rng.standard_normal((num_dir, gates, self._HIDDEN)),
+            "B": rng.standard_normal((num_dir, 2 * gates)),
+            "initial_h": rng.standard_normal((num_dir, self._BATCH, self._HIDDEN)),
+        }
+        inputs = ["X", "W", "R", "B", "", "initial_h"]
+        outputs = ["Y", "Y_h"]
+        if self._OP == "LSTM":
+            arrays["initial_c"] = rng.standard_normal(
+                (num_dir, self._BATCH, self._HIDDEN)
+            )
+            inputs.append("initial_c")
+            outputs.append("Y_c")
+        node = onnx.helper.make_node(
+            self._OP,
+            inputs,
+            outputs,
+            hidden_size=self._HIDDEN,
+            direction=self._DIRECTION,
+        )
+        initializers = [
+            onnx.numpy_helper.from_array(a.astype(np.float32), name=name)
+            for name, a in arrays.items()
+        ]
+        return [node], outputs, initializers
+
+
+@register_onnx_test
+class OnnxLSTM_reverse(_RecurrentDirectionTest):
+    @annotate_inputs([("X", torch.float32, [4, 3, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxLSTM_reverse_dynamicSeq(_RecurrentDirectionTest):
+    @annotate_inputs([("X", torch.float32, [-1, 3, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxLSTM_reverse_dynamicBatch(_RecurrentDirectionTest):
+    _BATCH = 2
+
+    @annotate_inputs([("X", torch.float32, [4, -1, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxLSTM_bidirectional_dynamicSeq(_RecurrentDirectionTest):
+    _DIRECTION = "bidirectional"
+
+    @annotate_inputs([("X", torch.float32, [-1, 3, 5])])
+    def graph(self):
+        return self._graph()

@@ -2,6 +2,7 @@
 #include "torch-mlir/Conversion/TorchOnnxToTorch/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
+#include "llvm/ADT/StringSwitch.h"
 
 using namespace mlir;
 using namespace mlir::torch::Torch;
@@ -99,7 +100,8 @@ static Value refineStateHiddenDim(ImplicitLocOpBuilder &b, Value state,
 }
 
 // The output of runRecurrentLoop: Y is [seq, batch, hidden] and each state is
-// [batch, hidden].
+// [batch, hidden]. runRecurrentDirections returns it with a num_directions dim
+// added.
 struct RecurrentLoopOutput {
   Value Y;
   SmallVector<Value> states;
@@ -188,6 +190,199 @@ runRecurrentLoop(ImplicitLocOpBuilder &b, Value X,
   output.Y = loop.getResult(0);
   llvm::append_range(output.states, loop.getResults().drop_front());
   return output;
+}
+
+enum class RecurrentDirection { Forward, Reverse, Bidirectional };
+
+// Reads the direction attribute of a recurrent op. Fails when it is not a
+// string or names an unsupported direction.
+static FailureOr<RecurrentDirection>
+parseRecurrentDirection(OpBinder binder, ConversionPatternRewriter &rewriter) {
+  std::string direction;
+  if (binder.customOpNameStringAttr(direction, "direction", "forward"))
+    return rewriter.notifyMatchFailure(binder.op,
+                                       "direction attribute must be a string");
+  std::optional<RecurrentDirection> parsed =
+      llvm::StringSwitch<std::optional<RecurrentDirection>>(direction)
+          .Case("forward", RecurrentDirection::Forward)
+          .Case("reverse", RecurrentDirection::Reverse)
+          .Case("bidirectional", RecurrentDirection::Bidirectional)
+          .Default(std::nullopt);
+  if (!parsed)
+    return rewriter.notifyMatchFailure(
+        binder.op, "Unsupported direction attribute value. Only 'forward', "
+                   "'reverse' and 'bidirectional' are supported but '" +
+                       direction + "' is provided.");
+  return *parsed;
+}
+
+// Runs a recurrent layer for each direction that the ONNX `direction`
+// attribute names and returns Y as [seq, num_directions, batch, hidden] and
+// each state as [num_directions, batch, hidden].
+//
+// `runLayer(d, X)` builds the layer on X with the parameters at index d of the
+// num_directions dim. The forward direction runs it on X. The reverse direction
+// runs it on X flipped along the seq dim and flips its Y back, so Y[t] is the
+// output for time step t and the final states are those after step 0.
+// Bidirectional runs forward with index 0 and reverse with index 1 and stacks
+// them in that order.
+static RecurrentLoopOutput runRecurrentDirections(
+    ImplicitLocOpBuilder &b, RecurrentDirection direction, Value X,
+    function_ref<RecurrentLoopOutput(int64_t, Value)> runLayer) {
+  auto intType = b.getType<IntType>();
+  Value cstZero = ConstantIntOp::create(b, intType, b.getI64IntegerAttr(0));
+  Value cstOne = ConstantIntOp::create(b, intType, b.getI64IntegerAttr(1));
+
+  auto unsqueeze = [&](Value value, int64_t dim, Value cstDim) -> Value {
+    auto ty = cast<ValueTensorType>(value.getType());
+    SmallVector<int64_t> sizes(ty.getSizes());
+    sizes.insert(sizes.begin() + dim, 1);
+    return AtenUnsqueezeOp::create(
+        b, ty.getWithSizesAndDtype(sizes, ty.getDtype()), value, cstDim);
+  };
+
+  // One entry per pass, true for a reverse pass. An entry's position is its
+  // index into the num_directions dim of the weights and initial states.
+  SmallVector<bool> reversed;
+  if (direction != RecurrentDirection::Reverse)
+    reversed.push_back(false);
+  if (direction != RecurrentDirection::Forward)
+    reversed.push_back(true);
+
+  Value seqDim;
+  SmallVector<RecurrentLoopOutput> outputs;
+  for (auto [d, isReverse] : llvm::enumerate(reversed)) {
+    Value layerX = X;
+    if (isReverse) {
+      seqDim = PrimListConstructOp::create(b, b.getType<ListType>(intType),
+                                           SmallVector<Value>{cstZero});
+      layerX = AtenFlipOp::create(b, X.getType(), X, seqDim);
+    }
+    RecurrentLoopOutput layer = runLayer(d, layerX);
+    RecurrentLoopOutput output;
+    for (Value state : layer.states)
+      output.states.push_back(unsqueeze(state, 0, cstZero));
+    output.Y = unsqueeze(layer.Y, 1, cstOne);
+    if (isReverse)
+      output.Y = AtenFlipOp::create(b, output.Y.getType(), output.Y, seqDim);
+    outputs.push_back(output);
+  }
+  if (outputs.size() == 1)
+    return outputs.front();
+
+  auto stack = [&](Value forward, Value reverse, int64_t dim,
+                   Value cstDim) -> Value {
+    auto ty = cast<ValueTensorType>(forward.getType());
+    SmallVector<int64_t> sizes(ty.getSizes());
+    sizes[dim] = 2;
+    Value list = PrimListConstructOp::create(
+        b, b.getType<ListType>(ty), SmallVector<Value>{forward, reverse});
+    return AtenCatOp::create(b, ty.getWithSizesAndDtype(sizes, ty.getDtype()),
+                             list, cstDim);
+  };
+  RecurrentLoopOutput result;
+  result.Y = stack(outputs[0].Y, outputs[1].Y, 1, cstOne);
+  for (auto [forward, reverse] :
+       llvm::zip_equal(outputs[0].states, outputs[1].states))
+    result.states.push_back(stack(forward, reverse, 0, cstZero));
+  return result;
+}
+
+// Returns the activation of every gate of every direction, forward direction
+// first. `defaults` holds the ONNX default activations of one direction.
+//
+// If the `activations` attribute is absent or empty, every direction uses
+// `defaults`. Otherwise it must list defaults.size() activations per direction.
+//
+// activation_alpha and activation_beta are single lists shared by all
+// directions. Each activation that takes an alpha or beta uses the next unused
+// value, in the order of the activations list.
+static FailureOr<SmallVector<RecurrentActivation>> resolveDirectionActivations(
+    OpBinder binder, ConversionPatternRewriter &rewriter, int64_t numDirections,
+    ArrayRef<std::string> defaults) {
+  SmallVector<std::string> names;
+  if (binder.stringArrayAttr(names, "activations"))
+    return rewriter.notifyMatchFailure(binder.op,
+                                       "activations must be a list of strings");
+  size_t expected = defaults.size() * numDirections;
+  if (names.empty()) {
+    for (int64_t d = 0; d < numDirections; ++d)
+      names.append(defaults.begin(), defaults.end());
+  } else if (names.size() != expected) {
+    return rewriter.notifyMatchFailure(
+        binder.op, "expected " + std::to_string(expected) + " activations (" +
+                       std::to_string(defaults.size()) + " per direction for " +
+                       std::to_string(numDirections) + " direction(s)), got " +
+                       std::to_string(names.size()));
+  }
+  return resolveRecurrentActivations(binder, rewriter, names);
+}
+
+// Fails when a recurrent op is given sequence_lens. The lowering runs every
+// batch item for the full sequence, which is wrong for a padded batch.
+// TODO: support sequence_lens.
+static LogicalResult checkNoSequenceLens(OpBinder binder,
+                                         ConversionPatternRewriter &rewriter) {
+  Value sequenceLens;
+  if (!binder.tensorOperandAtIndex(sequenceLens, 4))
+    return rewriter.notifyMatchFailure(binder.op,
+                                       "sequence_lens is not supported");
+  return success();
+}
+
+// Checks the static sizes of the per-direction operands against the op's
+// attributes. Absent operands and dynamic dims are skipped.
+//
+// The num_directions dim of W, R, B, initial_h and initial_c must equal
+// `numDirections`. It is dim 0, except for initial_h and initial_c with
+// layout 1, where it is dim 1.
+//
+// Dim 1 of W and R must be numGates * hiddenSize. Dim 1 of B must be
+// 2 * numGates * hiddenSize, since B holds the Wb and Rb biases of every gate.
+static LogicalResult
+checkPerDirectionShapes(OpBinder binder, ConversionPatternRewriter &rewriter,
+                        int64_t numDirections, int64_t layout, int64_t numGates,
+                        int64_t hiddenSize) {
+  for (auto [idx, name] : {std::pair<int64_t, StringRef>{1, "W"},
+                           {2, "R"},
+                           {3, "B"},
+                           {5, "initial_h"},
+                           {6, "initial_c"}}) {
+    Value operand;
+    if (binder.tensorOperandAtIndex(operand, idx))
+      continue;
+    auto ty = cast<ValueTensorType>(operand.getType());
+    int64_t dim = idx >= 5 && layout == 1 ? 1 : 0;
+    if (!ty.hasSizes() || static_cast<int64_t>(ty.getSizes().size()) <= dim)
+      continue;
+    int64_t size = ty.getSizes()[dim];
+    if (size != Torch::kUnknownSize && size != numDirections)
+      return rewriter.notifyMatchFailure(
+          binder.op, "num_directions from shape of " + name + " (" +
+                         std::to_string(size) + ") does not match " +
+                         "num_directions (" + std::to_string(numDirections) +
+                         ") from the direction attribute");
+  }
+  for (auto [idx, name, rank, factor] :
+       {std::tuple<int64_t, StringRef, size_t, int64_t>{1, "W", 3, 1},
+        {2, "R", 3, 1},
+        {3, "B", 2, 2}}) {
+    Value operand;
+    if (binder.tensorOperandAtIndex(operand, idx))
+      continue;
+    auto ty = cast<ValueTensorType>(operand.getType());
+    int64_t expected = factor * numGates * hiddenSize;
+    if (!ty.hasSizes() || ty.getSizes().size() != rank ||
+        ty.getSizes()[1] == Torch::kUnknownSize || ty.getSizes()[1] == expected)
+      continue;
+    std::string factorText = factor == 1 ? "" : std::to_string(factor) + " * ";
+    return rewriter.notifyMatchFailure(
+        binder.op, "dim 1 of " + name + " (" +
+                       std::to_string(ty.getSizes()[1]) + ") does not match " +
+                       std::to_string(expected) + " (" + factorText +
+                       std::to_string(numGates) + " gates * hidden_size)");
+  }
+  return success();
 }
 
 struct RnnWeights {
@@ -653,8 +848,6 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
   Location loc = binder.getLoc();
   mlir::ImplicitLocOpBuilder b(loc, rewriter);
 
-  std::string direction;
-
   ValueTensorType yTy, Y_hType, Y_cType;
   if (binder.tensorResultTypeAtIndex(yTy, 0) &&
       binder.tensorResultTypeAtIndex(Y_hType, 1) &&
@@ -684,46 +877,22 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
   auto xTy = cast<ValueTensorType>(X.getType());
   auto wTy = cast<ValueTensorType>(W.getType());
 
-  llvm::SmallVector<std::string> activationsList;
-  if (binder.stringArrayAttr(activationsList, "activations"))
-    return rewriter.notifyMatchFailure(
-        binder.op, "Missing required attribute; activations");
+  FailureOr<RecurrentDirection> direction =
+      parseRecurrentDirection(binder, rewriter);
+  if (failed(direction))
+    return failure();
+  bool isBidirectional = *direction == RecurrentDirection::Bidirectional;
+  int64_t num_directions = isBidirectional ? 2 : 1;
+  if (failed(checkNoSequenceLens(binder, rewriter)))
+    return failure();
 
-  if (!binder.customOpNameStringAttr(direction, "direction", "forward") &&
-      direction != "forward" && direction != "bidirectional")
-    return rewriter.notifyMatchFailure(
-        binder.op, "Unsupported direction attribute value. "
-                   "Only 'forward' / 'bidrectional' are supported but '" +
-                       direction + "' is provided.");
-  int64_t num_directions = 1 + (direction == "bidirectional");
-  bool isBidirectional = direction == "bidirectional";
-
-  // TODO: The count is not checked against the direction. A bidirectional LSTM
-  // with 3 activations gives the reverse direction the defaults, and a forward
-  // LSTM with 6 ignores the last 3; the ONNX spec and onnxruntime require 3 for
-  // forward and 6 for bidirectional.
-  int64_t num_activations = activationsList.size();
-  if (num_activations != 0 && num_activations != 3 && num_activations != 6) {
-    return rewriter.notifyMatchFailure(
-        binder.op, "activations must either be empty (default), have 3 elements"
-                   " (forward) or, have 6 elements (bidirectional), but " +
-                       std::to_string(activationsList.size()) +
-                       " are provided.");
-  }
-
-  // Forward f, g, h then reverse f, g, h, starting from the ONNX defaults and
-  // replaced by the activations the model gives. activation_alpha and
-  // activation_beta are consumed across all six in this order.
-  llvm::SmallVector<std::string> activationNames = {"Sigmoid", "Tanh", "Tanh",
-                                                    "Sigmoid", "Tanh", "Tanh"};
-  for (int64_t i = 0; i < num_activations; ++i)
-    activationNames[i] = activationsList[i];
+  // Three activations (f, g, h) per direction.
   FailureOr<SmallVector<RecurrentActivation>> resolvedActivations =
-      resolveRecurrentActivations(binder, rewriter, activationNames);
+      resolveDirectionActivations(binder, rewriter, num_directions,
+                                  {"Sigmoid", "Tanh", "Tanh"});
   if (failed(resolvedActivations))
     return failure();
-  // TODO : Add checks, defaults and fails for inputs - sequence_lens, P and
-  // attrs- clip, input_forget, layout
+  // TODO: support P, clip and input_forget.
 
   Value B;
   if (binder.tensorOperandAtIndex(B, 3)) {
@@ -741,13 +910,6 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
     B = AtenZerosOp::create(b, BType, zerosShapeList, none, none, none, none);
   }
 
-  LstmActivations activations{(*resolvedActivations)[0],
-                              (*resolvedActivations)[1],
-                              (*resolvedActivations)[2]};
-  LstmActivations activationsRev{(*resolvedActivations)[3],
-                                 (*resolvedActivations)[4],
-                                 (*resolvedActivations)[5]};
-
   float clip;
   if (!binder.f32FloatAttr(clip, "clip", 0.0) && clip != 0.0)
     return rewriter.notifyMatchFailure(binder.op,
@@ -761,29 +923,23 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
                        std::to_string(input_forget));
 
   int64_t layout;
-  if (!binder.s64IntegerAttr(layout, "layout", 0) && layout != 0 && layout != 1)
+  if (binder.s64IntegerAttr(layout, "layout", 0))
+    return rewriter.notifyMatchFailure(binder.op,
+                                       "Unsupported layout attribute type.");
+  if (layout != 0 && layout != 1)
     return rewriter.notifyMatchFailure(
         binder.op, "invalid value of layout attribute, expecting 0 / 1 got " +
                        std::to_string(layout));
+  if (failed(checkPerDirectionShapes(binder, rewriter, num_directions, layout,
+                                     /*numGates=*/4, hidden_size)))
+    return failure();
 
   // X is not yet transposed: it is [seq, batch, input] for layout 0 and
   // [batch, seq, input] for layout 1.
-  Value seqLen = getTensorDimSize(rewriter, X, layout == 0 ? 0 : 1);
   Value batchSize = getTensorDimSize(rewriter, X, layout == 0 ? 1 : 0);
 
   int64_t w_input_size = wTy.getSizes()[2];
   int64_t input_size = w_input_size;
-  if (num_directions != wTy.getSizes()[0])
-    return rewriter.notifyMatchFailure(
-        binder.op, "num_directions (" + std::to_string(num_directions) +
-                       ") does not match the first dimension of wTy (" +
-                       std::to_string(wTy.getSizes()[0]) + ")");
-
-  if (4 * hidden_size != wTy.getSizes()[1])
-    return rewriter.notifyMatchFailure(
-        binder.op, "4 times hidden_size (" + std::to_string(4 * hidden_size) +
-                       ") does not match the second dimension of wTy (" +
-                       std::to_string(wTy.getSizes()[1]) + ")");
   assertInputSizesMatch(b, X, W);
 
   auto intType = b.getType<IntType>();
@@ -903,85 +1059,19 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
     initialCs.push_back(getDirection(b, d, initial_c));
   }
 
-  LstmLayerOutput lstmLayerOutput = lstm_layer(
-      rewriter, loc, X, initialHs[0], initialCs[0], weights[0], activations);
-
-  Value Y_h_result, Y_c_result, Y_result;
-
-  // if forward (unidirectional) unsqueeze and output
-  auto YallDtype =
-      cast<ValueTensorType>(lstmLayerOutput.Y_h.getType()).getDtype();
-  auto Y_h_Y_c_uni_type = getTensorTypeFromShapeValues(
-      {cstOne, batchSize, cstHiddenSize}, YallDtype);
-
-  auto Y_uni_type = getTensorTypeFromShapeValues(
-      {seqLen, cstOne, batchSize, cstHiddenSize}, YallDtype);
-
-  auto Y_h_Y_c_res_type = getTensorTypeFromShapeValues(
-      {cstNumDirections, batchSize, cstHiddenSize}, YallDtype);
-
-  auto Y_res_type = getTensorTypeFromShapeValues(
-      {seqLen, cstNumDirections, batchSize, cstHiddenSize}, YallDtype);
-
-  Value Y_h_forward = AtenUnsqueezeOp::create(b, Y_h_Y_c_uni_type,
-                                              lstmLayerOutput.Y_h, cstZero);
-
-  Value Y_c_forward = AtenUnsqueezeOp::create(b, Y_h_Y_c_uni_type,
-                                              lstmLayerOutput.Y_c, cstZero);
-
-  // unsqueeze num_directions dim1 of Y
-  // to create the onnx.LSTM output shape [seq_length, num_directions,
-  // batch_size, hidden_size]
-  Value Y_forward =
-      AtenUnsqueezeOp::create(b, Y_uni_type, lstmLayerOutput.Y, cstOne);
-
-  Y_result = Y_forward;
-  Y_h_result = Y_h_forward;
-  Y_c_result = Y_c_forward;
-
-  // add bidrectional reverse layer
-  // this is just flip X, lstm layer, flip results, stack
-  // flip X
-  Value dim0, X_reverse, Y_h_reverse, Y_c_reverse, Y_reverse_unflipped,
-      Y_reverse, Y_output_list, Y_h_output_list, Y_c_output_list;
-  LstmLayerOutput revLstmLayerOutput;
-  if (isBidirectional) {
-    dim0 = PrimListConstructOp::create(b, b.getType<ListType>(intType),
-                                       SmallVector<Value>{cstZero});
-    X_reverse = AtenFlipOp::create(b, xTy, X, dim0); // flip along seq_len dim
-    revLstmLayerOutput = lstm_layer(rewriter, loc, X_reverse, initialHs[1],
-                                    initialCs[1], weights[1], activationsRev);
-
-    // unsqueeze  Y_rev, Y_h_rev, Y_c_rev
-    Y_h_reverse = AtenUnsqueezeOp::create(b, Y_h_Y_c_uni_type,
-                                          revLstmLayerOutput.Y_h, cstZero);
-    Y_c_reverse = AtenUnsqueezeOp::create(b, Y_h_Y_c_uni_type,
-                                          revLstmLayerOutput.Y_c, cstZero);
-    Y_reverse_unflipped =
-        AtenUnsqueezeOp::create(b, Y_uni_type, revLstmLayerOutput.Y, cstOne);
-
-    // flip Y_rev on dim 0 [seq_len]
-    Y_reverse = AtenFlipOp::create(b, Y_uni_type, Y_reverse_unflipped, dim0);
-
-    // Concat forward and reverse results on dim 1
-    Y_output_list =
-        PrimListConstructOp::create(b, b.getType<ListType>(Y_uni_type),
-                                    SmallVector<Value>{Y_forward, Y_reverse});
-    Y_result = AtenCatOp::create(b, Y_res_type, Y_output_list, cstOne);
-
-    // Concat forward and reverse results on dim 0
-    Y_h_output_list = PrimListConstructOp::create(
-        b, b.getType<ListType>(Y_h_Y_c_uni_type),
-        SmallVector<Value>{Y_h_forward, Y_h_reverse});
-    Y_h_result =
-        AtenCatOp::create(b, Y_h_Y_c_res_type, Y_h_output_list, cstZero);
-
-    Y_c_output_list = PrimListConstructOp::create(
-        b, b.getType<ListType>(Y_h_Y_c_uni_type),
-        SmallVector<Value>{Y_c_forward, Y_c_reverse});
-    Y_c_result =
-        AtenCatOp::create(b, Y_h_Y_c_res_type, Y_c_output_list, cstZero);
-  }
+  RecurrentLoopOutput lstmOutput = runRecurrentDirections(
+      b, *direction, X, [&](int64_t d, Value layerX) -> RecurrentLoopOutput {
+        LstmActivations activations{(*resolvedActivations)[3 * d],
+                                    (*resolvedActivations)[3 * d + 1],
+                                    (*resolvedActivations)[3 * d + 2]};
+        LstmLayerOutput layer =
+            lstm_layer(rewriter, loc, layerX, initialHs[d], initialCs[d],
+                       weights[d], activations);
+        return {layer.Y, {layer.Y_h, layer.Y_c}};
+      });
+  Value Y_result = lstmOutput.Y;
+  Value Y_h_result = lstmOutput.states[0];
+  Value Y_c_result = lstmOutput.states[1];
 
   if (layout == 1) {
     // Update Y, Y_h, Y_c results to layout 1
