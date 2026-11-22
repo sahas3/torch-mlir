@@ -72,6 +72,7 @@ ONNX_E2E_TOSA_XFAIL_SET = {
     "OnnxRNN_scaledtanh_no_parameters",
     "OnnxLSTM_alpha_order",
     "OnnxLSTM_bidirectional_reverse_alpha",
+    "OnnxGRU_bidirectional_reverse_alpha",
     "OnnxRNN_bidirectional_reverse_alpha",
     "OnnxRNN_thresholdedrelu_at_alpha",
     # Onnx{LSTM,GRU,RNN}_dynamic*: no torch -> tosa lowering of the recurrent
@@ -96,6 +97,10 @@ ONNX_E2E_TOSA_XFAIL_SET = {
     "OnnxRNN_reverse_dynamicSeq",
     "OnnxRNN_bidirectional",
     "OnnxRNN_bidirectional_dynamicBatch",
+    "OnnxGRU_reverse",
+    "OnnxGRU_reverse_dynamicSeq",
+    "OnnxGRU_bidirectional",
+    "OnnxGRU_bidirectional_dynamicBatch",
     # OnnxSTFT_onesided_basic: STFT has no torch -> tosa lowering.
     "OnnxSTFT_onesided_basic",
     # OnnxAveragePool2d_countIncludePad_asymmetricPadsDilated: tosa.avg_pool2d

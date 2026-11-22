@@ -224,6 +224,17 @@ class OnnxLSTM_bidirectional_reverse_alpha(_RecurrentActivationTest):
     _BETA = [0.4]
 
 
+# The same for a bidirectional GRU: the reverse f (LeakyRelu) gets the second
+# alpha.
+@register_onnx_test
+class OnnxGRU_bidirectional_reverse_alpha(_RecurrentActivationTest):
+    _OP = "GRU"
+    _DIRECTION = "bidirectional"
+    _ACTIVATIONS = ["HardSigmoid", "Tanh", "LeakyRelu", "Tanh"]
+    _ALPHA = [0.3, 0.2]
+    _BETA = [0.4]
+
+
 # A bidirectional RNN uses LeakyRelu forward and HardSigmoid in reverse, which
 # takes the second alpha and the only beta.
 @register_onnx_test
@@ -481,6 +492,43 @@ class OnnxRNN_bidirectional(_RecurrentDirectionTest):
 @register_onnx_test
 class OnnxRNN_bidirectional_dynamicBatch(_RecurrentDirectionTest):
     _OP, _DIRECTION = "RNN", "bidirectional"
+    _BATCH = 2
+
+    @annotate_inputs([("X", torch.float32, [4, -1, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxGRU_reverse(_RecurrentDirectionTest):
+    _OP = "GRU"
+
+    @annotate_inputs([("X", torch.float32, [4, 3, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxGRU_reverse_dynamicSeq(_RecurrentDirectionTest):
+    _OP = "GRU"
+
+    @annotate_inputs([("X", torch.float32, [-1, 3, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxGRU_bidirectional(_RecurrentDirectionTest):
+    _OP, _DIRECTION = "GRU", "bidirectional"
+
+    @annotate_inputs([("X", torch.float32, [4, 3, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxGRU_bidirectional_dynamicBatch(_RecurrentDirectionTest):
+    _OP, _DIRECTION = "GRU", "bidirectional"
     _BATCH = 2
 
     @annotate_inputs([("X", torch.float32, [4, -1, 5])])

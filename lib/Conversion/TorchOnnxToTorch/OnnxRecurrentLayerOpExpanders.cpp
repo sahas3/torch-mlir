@@ -1037,7 +1037,6 @@ LogicalResult OnnxLstmExpander(OpBinder binder,
 // R[zrh] - R recurrence weight matrix for update, reset, and hidden gates
 // Wb[zrh] - W bias vectors for update, reset, and hidden gates
 // Rb[zrh] - R bias vectors for update, reset, and hidden gates
-// backwards currently not supported
 
 struct GruWeights {
   Value Wz;
@@ -1144,7 +1143,7 @@ LogicalResult OnnxGruExpander(OpBinder binder,
                                        "At least one output must be present");
   }
 
-  Value X, W, R, B, initial_h, sequence_lens;
+  Value X, W, R, B, initial_h;
   if (binder.tensorOperandAtIndex(X, 0) || binder.tensorOperandAtIndex(W, 1) ||
       binder.tensorOperandAtIndex(R, 2))
     return rewriter.notifyMatchFailure(binder.op,
@@ -1165,57 +1164,33 @@ LogicalResult OnnxGruExpander(OpBinder binder,
   auto xTy = cast<ValueTensorType>(X.getType());
   auto wTy = cast<ValueTensorType>(W.getType());
 
-  // Setting up activations
-  llvm::SmallVector<std::string> activationNames = {"Sigmoid", "Tanh"};
-  llvm::SmallVector<std::string> activationsList;
-  if (!binder.stringArrayAttr(activationsList, "activations") &&
-      activationsList.size() == 2) {
-    activationNames = activationsList;
-  } else if (activationsList.size() > 0) {
-    return rewriter.notifyMatchFailure(
-        binder.op, "Unsupported number of activation functions");
-  }
+  FailureOr<RecurrentDirection> direction =
+      parseRecurrentDirection(binder, rewriter);
+  if (failed(direction))
+    return failure();
+  int64_t num_directions =
+      *direction == RecurrentDirection::Bidirectional ? 2 : 1;
+  if (failed(checkNoSequenceLens(binder, rewriter)))
+    return failure();
+
+  // Two activations (f, g) per direction.
   FailureOr<SmallVector<RecurrentActivation>> resolvedActivations =
-      resolveRecurrentActivations(binder, rewriter, activationNames);
+      resolveDirectionActivations(binder, rewriter, num_directions,
+                                  {"Sigmoid", "Tanh"});
   if (failed(resolvedActivations))
     return failure();
-  GruActivations activations{(*resolvedActivations)[0],
-                             (*resolvedActivations)[1]};
 
   // Other attributes
   int64_t layout;
   if (binder.s64IntegerAttr(layout, "layout", 0))
     return rewriter.notifyMatchFailure(binder.op,
                                        "Unsupported layout attribute type.");
+  if (failed(checkPerDirectionShapes(binder, rewriter, num_directions, layout,
+                                     /*numGates=*/3, hidden_size)))
+    return failure();
 
-  std::string direction;
-  if (!binder.customOpNameStringAttr(direction, "direction", "forward") &&
-      direction != "forward")
-    return rewriter.notifyMatchFailure(binder.op,
-                                       "Unsupported direction attribute value");
-
-  int64_t num_directions = direction == "bidirectional" ? 2 : 1;
   // Validations
-  auto XShape = xTy.getSizes();
-  int64_t batch_size = (layout == 0) ? XShape[1] : XShape[0];
-  int64_t seq_len = (layout == 0) ? XShape[0] : XShape[1];
-  int64_t input_size = XShape[2];
-
-  std::ostringstream oss;
-
-  if (num_directions != 1) {
-    oss << "Expected num_directions to be 1, but got " << num_directions
-        << ". ";
-  }
-
-  if (hidden_size * 3 != wTy.getSizes()[1]) {
-    oss << "Expected dim 1 of W to be the same as 3*hidden_size "
-        << 3 * hidden_size << ", but got " << wTy.getSizes()[1] << ". ";
-  }
-
-  if (!oss.str().empty()) {
-    return rewriter.notifyMatchFailure(binder.op, oss.str());
-  }
+  int64_t input_size = xTy.getSizes()[2];
 
   // Setting up initial_h
   if (binder.tensorOperandAtIndex(initial_h, 5)) {
@@ -1240,9 +1215,6 @@ LogicalResult OnnxGruExpander(OpBinder binder,
     }
     initial_h = refineStateHiddenDim(b, initial_h, hidden_size);
   }
-
-  if (binder.tensorOperandAtIndex(sequence_lens, 4))
-    sequence_lens = ConstantNoneOp::create(b);
 
   float clip;
   if (!binder.f32FloatAttr(clip, "clip") && clip != 0.0f)
@@ -1271,13 +1243,6 @@ LogicalResult OnnxGruExpander(OpBinder binder,
     B = Torch::AtenZerosOp::create(b, BType, BShapeList, cstXDtype, cstNone,
                                    cstNone, cstNone);
   }
-
-  Value W_forward = getDirection(b, 0, W);
-  Value R_forward = getDirection(b, 0, R);
-  Value B_forward = getDirection(b, 0, B);
-  Value initial_h_forward = getDirection(b, 0, initial_h);
-
-  GruWeights weights;
 
   // Slice a tensor into numSlices slices of size sliceSize
   // This is used for slicing the weights & biases into the individual gates
@@ -1308,25 +1273,35 @@ LogicalResult OnnxGruExpander(OpBinder binder,
       wTy.getSizes()[2] != Torch::kUnknownSize ? wTy.getSizes()[2] : input_size;
   auto wSliceType = b.getType<ValueTensorType>(
       llvm::SmallVector<int64_t>{hidden_size, wInputSize}, wTy.getDtype());
-  auto W_slices = sliceTensor(W_forward, hidden_size, 3, wSliceType);
-  std::tie(weights.Wz, weights.Wr, weights.Wh) =
-      std::make_tuple(W_slices[0], W_slices[1], W_slices[2]);
-
-  // Slice R
   auto rSliceType = b.getType<ValueTensorType>(
       llvm::SmallVector<int64_t>{hidden_size, hidden_size}, wTy.getDtype());
-  auto R_slices = sliceTensor(R_forward, hidden_size, 3, rSliceType);
-  std::tie(weights.Rz, weights.Rr, weights.Rh) =
-      std::make_tuple(R_slices[0], R_slices[1], R_slices[2]);
-
-  // Slice B
   auto bSliceType = b.getType<ValueTensorType>(
       llvm::SmallVector<int64_t>{hidden_size}, wTy.getDtype());
-  auto B_slices = sliceTensor(B_forward, hidden_size, 6, bSliceType);
-  std::tie(weights.Wbz, weights.Wbr, weights.Wbh, weights.Rbz, weights.Rbr,
-           weights.Rbh) =
-      std::make_tuple(B_slices[0], B_slices[1], B_slices[2], B_slices[3],
-                      B_slices[4], B_slices[5]);
+
+  // Slice W, R and B of each direction into the z, r and h gates.
+  SmallVector<GruWeights> weights;
+  SmallVector<Value> initialStates;
+  for (int64_t d = 0; d < num_directions; ++d) {
+    GruWeights weights_d;
+    auto W_slices =
+        sliceTensor(getDirection(b, d, W), hidden_size, 3, wSliceType);
+    std::tie(weights_d.Wz, weights_d.Wr, weights_d.Wh) =
+        std::make_tuple(W_slices[0], W_slices[1], W_slices[2]);
+
+    auto R_slices =
+        sliceTensor(getDirection(b, d, R), hidden_size, 3, rSliceType);
+    std::tie(weights_d.Rz, weights_d.Rr, weights_d.Rh) =
+        std::make_tuple(R_slices[0], R_slices[1], R_slices[2]);
+
+    auto B_slices =
+        sliceTensor(getDirection(b, d, B), hidden_size, 6, bSliceType);
+    std::tie(weights_d.Wbz, weights_d.Wbr, weights_d.Wbh, weights_d.Rbz,
+             weights_d.Rbr, weights_d.Rbh) =
+        std::make_tuple(B_slices[0], B_slices[1], B_slices[2], B_slices[3],
+                        B_slices[4], B_slices[5]);
+    weights.push_back(weights_d);
+    initialStates.push_back(getDirection(b, d, initial_h));
+  }
 
   // Process inputs based on layout
   if (layout == 1) {
@@ -1334,8 +1309,15 @@ LogicalResult OnnxGruExpander(OpBinder binder,
   }
 
   // Weights and biases ready. Calling GRU layer to insert the actual ops.
-  GruLayerOutput gruLayerOutput = gru_layer(b, X, initial_h_forward, weights,
-                                            activations, linear_before_reset);
+  RecurrentLoopOutput gruOutput = runRecurrentDirections(
+      b, *direction, X, [&](int64_t d, Value layerX) -> RecurrentLoopOutput {
+        GruActivations activations{(*resolvedActivations)[2 * d],
+                                   (*resolvedActivations)[2 * d + 1]};
+        GruLayerOutput layer =
+            gru_layer(b, layerX, initialStates[d], weights[d], activations,
+                      linear_before_reset);
+        return {layer.Y, {layer.Y_h}};
+      });
 
   // Process outputs based on layout. A declared result type can be more static
   // than the computed one (a static Y for a dynamic X); cast to it.
@@ -1343,11 +1325,7 @@ LogicalResult OnnxGruExpander(OpBinder binder,
   if (binder.tensorResultTypeAtIndex(yTy, 0)) {
     Y_final = cstNone;
   } else {
-    Type yTy_original = b.getType<ValueTensorType>(
-        llvm::SmallVector<int64_t>{seq_len, 1, batch_size, hidden_size},
-        yTy.getDtype());
-    Y_final =
-        AtenUnsqueezeOp::create(b, yTy_original, gruLayerOutput.Y, cstOne);
+    Y_final = gruOutput.Y;
     if (layout == 1) {
       Y_final = StaticTranspose(b, Y_final, 1, 2);
       Y_final = StaticTranspose(b, Y_final, 0, 1);
@@ -1359,11 +1337,7 @@ LogicalResult OnnxGruExpander(OpBinder binder,
   if (binder.tensorResultTypeAtIndex(Y_hType, 1)) {
     Y_h_final = cstNone;
   } else {
-    Type y_hTy_original = b.getType<ValueTensorType>(
-        llvm::SmallVector<int64_t>{1, batch_size, hidden_size},
-        Y_hType.getDtype());
-    Y_h_final =
-        AtenUnsqueezeOp::create(b, y_hTy_original, gruLayerOutput.Y_h, cstZero);
+    Y_h_final = gruOutput.states[0];
     if (layout == 1)
       Y_h_final = StaticTranspose(b, Y_h_final, 0, 1);
     Y_h_final = castToType(b, Y_h_final, Y_hType);

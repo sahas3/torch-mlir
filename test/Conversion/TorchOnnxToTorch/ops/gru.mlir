@@ -73,11 +73,11 @@ func.func @test_gru_dynamic_batch(%arg0: !torch.vtensor<[3,?,5],f32>, %arg1: !to
 // CHECK:           %[[Y_SHAPE:.*]] = torch.prim.ListConstruct %{{.*}}, %[[BATCH_L]], %{{.*}} :
 // CHECK:           %[[LOOP:.*]]:2 = torch.prim.Loop
 // CHECK:           ^bb0(%{{.*}}: !torch.int, %{{.*}}: !torch.vtensor<[3,?,4],f32>, %{{.*}}: !torch.vtensor<[?,4],f32>):
+// CHECK:           %[[YH_U:.*]] = torch.aten.unsqueeze %[[LOOP]]#1, %[[C0]] : !torch.vtensor<[?,4],f32>, !torch.int -> !torch.vtensor<[1,?,4],f32>
 // CHECK:           %[[Y_U:.*]] = torch.aten.unsqueeze %[[LOOP]]#0, %[[C1]] : !torch.vtensor<[3,?,4],f32>, !torch.int -> !torch.vtensor<[3,1,?,4],f32>
 // CHECK-DAG:       %[[C2:.*]] = torch.constant.int 2
 // CHECK:           %[[Y_T:.*]] = torch.aten.transpose.int %[[Y_U]], %[[C1]], %[[C2]] : {{.*}} -> !torch.vtensor<[3,?,1,4],f32>
 // CHECK:           %[[Y:.*]] = torch.aten.transpose.int %[[Y_T]], %[[C0]], %[[C1]] : {{.*}} -> !torch.vtensor<[?,3,1,4],f32>
-// CHECK:           %[[YH_U:.*]] = torch.aten.unsqueeze %[[LOOP]]#1, %[[C0]] : !torch.vtensor<[?,4],f32>, !torch.int -> !torch.vtensor<[1,?,4],f32>
 // CHECK:           %[[YH:.*]] = torch.aten.transpose.int %[[YH_U]], %[[C0]], %[[C1]] : {{.*}} -> !torch.vtensor<[?,1,4],f32>
 // CHECK:           return %[[Y]], %[[YH]] : !torch.vtensor<[?,3,1,4],f32>, !torch.vtensor<[?,1,4],f32>
 
@@ -100,10 +100,10 @@ func.func @test_gru_layout1_dynamic_batch(%arg0: !torch.vtensor<[?,3,5],f32>, %a
 // CHECK:           %[[Y_SHAPE:.*]] = torch.prim.ListConstruct %[[SEQ]], %{{.*}}, %{{.*}} :
 // CHECK:           %[[LOOP:.*]]:2 = torch.prim.Loop %[[SEQ]], %{{.*}}, init(
 // CHECK:           ^bb0(%{{.*}}: !torch.int, %{{.*}}: !torch.vtensor<[?,2,4],f32>, %{{.*}}: !torch.vtensor<[2,4],f32>):
+// CHECK:           %[[YH_U:.*]] = torch.aten.unsqueeze %[[LOOP]]#1, %[[C0]] : !torch.vtensor<[2,4],f32>, !torch.int -> !torch.vtensor<[1,2,4],f32>
 // CHECK:           %[[Y_U:.*]] = torch.aten.unsqueeze %[[LOOP]]#0, %[[C1]] : !torch.vtensor<[?,2,4],f32>, !torch.int -> !torch.vtensor<[?,1,2,4],f32>
 // CHECK:           %[[Y_T:.*]] = torch.aten.transpose.int %[[Y_U]], %[[C1]], %[[C2]] : {{.*}} -> !torch.vtensor<[?,2,1,4],f32>
 // CHECK:           %[[Y:.*]] = torch.aten.transpose.int %[[Y_T]], %[[C0]], %[[C1]] : {{.*}} -> !torch.vtensor<[2,?,1,4],f32>
-// CHECK:           %[[YH_U:.*]] = torch.aten.unsqueeze %[[LOOP]]#1, %[[C0]] : !torch.vtensor<[2,4],f32>, !torch.int -> !torch.vtensor<[1,2,4],f32>
 // CHECK:           %[[YH:.*]] = torch.aten.transpose.int %[[YH_U]], %[[C0]], %[[C1]] : {{.*}} -> !torch.vtensor<[2,1,4],f32>
 // CHECK:           return %[[Y]], %[[YH]] : !torch.vtensor<[2,?,1,4],f32>, !torch.vtensor<[2,1,4],f32>
 
@@ -169,8 +169,8 @@ func.func @test_gru_dynamic_initial_h(%arg0: !torch.vtensor<[?,?,5],f32>, %arg1:
 // Y is cast to the declared type; Y_h already matches and is not cast.
 
 // CHECK-LABEL:   func.func @test_gru_static_result_dynamic_x(
-// CHECK:           %[[Y:.*]] = torch.tensor_static_info_cast %{{.*}} : !torch.vtensor<[?,1,3,4],f32> to !torch.vtensor<[2,1,3,4],f32>
 // CHECK:           %[[YH:.*]] = torch.aten.unsqueeze %{{.*}}#1, %{{.*}} : !torch.vtensor<[3,4],f32>, !torch.int -> !torch.vtensor<[1,3,4],f32>
+// CHECK:           %[[Y:.*]] = torch.tensor_static_info_cast %{{.*}} : !torch.vtensor<[?,1,3,4],f32> to !torch.vtensor<[2,1,3,4],f32>
 // CHECK:           return %[[Y]], %[[YH]] : !torch.vtensor<[2,1,3,4],f32>, !torch.vtensor<[1,3,4],f32>
 
 func.func @test_gru_static_result_dynamic_x(%arg0: !torch.vtensor<[?,3,5],f32>, %arg1: !torch.vtensor<[1,12,5],f32>, %arg2: !torch.vtensor<[1,12,4],f32>, %arg3: !torch.vtensor<[1,24],f32>) -> (!torch.vtensor<[2,1,3,4],f32>, !torch.vtensor<[1,3,4],f32>) attributes {torch.onnx_meta.ir_version = 9 : si64, torch.onnx_meta.opset_version = 22 : si64} {
@@ -234,4 +234,116 @@ func.func @test_gru_layout1_initial_h(%arg0: !torch.vtensor<[?,3,5],f32>, %arg1:
   %none = torch.constant.none
   %0:2 = torch.operator "onnx.GRU"(%arg0, %arg1, %arg2, %arg3, %none, %arg4) {torch.onnx.hidden_size = 4 : si64, torch.onnx.layout = 1 : si64} : (!torch.vtensor<[?,3,5],f32>, !torch.vtensor<[1,12,5],f32>, !torch.vtensor<[1,12,4],f32>, !torch.vtensor<[1,24],f32>, !torch.none, !torch.vtensor<[1,1,?],f32>) -> (!torch.vtensor<[?,3,1,4],f32>, !torch.vtensor<[?,1,4],f32>)
   return %0#0, %0#1 : !torch.vtensor<[?,3,1,4],f32>, !torch.vtensor<[?,1,4],f32>
+}
+
+// -----
+
+// A reverse GRU runs the layer with the direction-0 parameters on X flipped
+// along the seq dim, then flips Y back.
+
+// CHECK-LABEL:   func.func @test_gru_reverse(
+// CHECK-DAG:       %[[C0:.*]] = torch.constant.int 0
+// CHECK:           torch.aten.select.int %arg1, %[[C0]], %[[C0]] : !torch.vtensor<[1,12,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[12,5],f32>
+// CHECK:           %[[H0:.*]] = torch.aten.select.int %arg4, %[[C0]], %[[C0]] : !torch.vtensor<[1,2,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,4],f32>
+// CHECK:           %[[DIMS:.*]] = torch.prim.ListConstruct %[[C0]] : (!torch.int) -> !torch.list<int>
+// CHECK:           %[[X_REV:.*]] = torch.aten.flip %arg0, %[[DIMS]] : !torch.vtensor<[3,2,5],f32>, !torch.list<int> -> !torch.vtensor<[3,2,5],f32>
+// CHECK:           %[[LOOP:.*]]:2 = torch.prim.Loop %{{.*}}, %{{.*}}, init(%{{.*}}, %[[H0]])
+// CHECK:             torch.aten.select.int %[[X_REV]], %{{.*}}, %{{.*}} : !torch.vtensor<[3,2,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,5],f32>
+// CHECK:           %[[Y_H:.*]] = torch.aten.unsqueeze %[[LOOP]]#1, %{{.*}} : !torch.vtensor<[2,4],f32>, !torch.int -> !torch.vtensor<[1,2,4],f32>
+// CHECK:           %[[Y_U:.*]] = torch.aten.unsqueeze %[[LOOP]]#0, %{{.*}} : !torch.vtensor<[3,2,4],f32>, !torch.int -> !torch.vtensor<[3,1,2,4],f32>
+// CHECK:           %[[Y:.*]] = torch.aten.flip %[[Y_U]], %[[DIMS]] : !torch.vtensor<[3,1,2,4],f32>, !torch.list<int> -> !torch.vtensor<[3,1,2,4],f32>
+// CHECK:           return %[[Y]], %[[Y_H]]
+
+func.func @test_gru_reverse(%arg0: !torch.vtensor<[3,2,5],f32>, %arg1: !torch.vtensor<[1,12,5],f32>, %arg2: !torch.vtensor<[1,12,4],f32>, %arg3: !torch.vtensor<[1,24],f32>, %arg4: !torch.vtensor<[1,2,4],f32>) -> (!torch.vtensor<[3,1,2,4],f32>, !torch.vtensor<[1,2,4],f32>) attributes {torch.onnx_meta.ir_version = 9 : si64, torch.onnx_meta.opset_version = 22 : si64} {
+  %none = torch.constant.none
+  %0:2 = torch.operator "onnx.GRU"(%arg0, %arg1, %arg2, %arg3, %none, %arg4) {torch.onnx.direction = "reverse", torch.onnx.hidden_size = 4 : si64} : (!torch.vtensor<[3,2,5],f32>, !torch.vtensor<[1,12,5],f32>, !torch.vtensor<[1,12,4],f32>, !torch.vtensor<[1,24],f32>, !torch.none, !torch.vtensor<[1,2,4],f32>) -> (!torch.vtensor<[3,1,2,4],f32>, !torch.vtensor<[1,2,4],f32>)
+  return %0#0, %0#1 : !torch.vtensor<[3,1,2,4],f32>, !torch.vtensor<[1,2,4],f32>
+}
+
+// -----
+
+// A bidirectional GRU runs direction 0 forward and direction 1 in reverse,
+// each with its own slice of W, R, B and initial_h, and stacks the results
+// forward first.
+
+// CHECK-LABEL:   func.func @test_gru_bidirectional(
+// CHECK-DAG:       %[[C0:.*]] = torch.constant.int 0
+// CHECK-DAG:       %[[C1:.*]] = torch.constant.int 1
+// CHECK:           %[[W0:.*]] = torch.aten.select.int %arg1, %[[C0]], %[[C0]] : !torch.vtensor<[2,12,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[12,5],f32>
+// CHECK:           %[[WZ0:.*]] = torch.aten.slice.Tensor %[[W0]], %[[C0]], %[[C0]], %{{.*}}, %[[C1]] : !torch.vtensor<[12,5],f32>, {{.*}} -> !torch.vtensor<[4,5],f32>
+// CHECK:           %[[WR0:.*]] = torch.aten.slice.Tensor %[[W0]],
+// CHECK:           %[[WH0:.*]] = torch.aten.slice.Tensor %[[W0]],
+// CHECK:           %[[R0:.*]] = torch.aten.select.int %arg2, %[[C0]], %[[C0]] : !torch.vtensor<[2,12,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[12,4],f32>
+// CHECK:           %[[RZ0:.*]] = torch.aten.slice.Tensor %[[R0]], %[[C0]], %[[C0]], %{{.*}}, %[[C1]] : !torch.vtensor<[12,4],f32>, {{.*}} -> !torch.vtensor<[4,4],f32>
+// CHECK:           %[[RR0:.*]] = torch.aten.slice.Tensor %[[R0]],
+// CHECK:           %[[RH0:.*]] = torch.aten.slice.Tensor %[[R0]],
+// CHECK:           %[[B0:.*]] = torch.aten.select.int %arg3, %[[C0]], %[[C0]] : !torch.vtensor<[2,24],f32>, !torch.int, !torch.int -> !torch.vtensor<[24],f32>
+// CHECK:           %[[BWZ0:.*]] = torch.aten.slice.Tensor %[[B0]], %[[C0]], %[[C0]], %{{.*}}, %[[C1]] : !torch.vtensor<[24],f32>, {{.*}} -> !torch.vtensor<[4],f32>
+// CHECK:           %[[BWR0:.*]] = torch.aten.slice.Tensor %[[B0]],
+// CHECK:           %[[BWH0:.*]] = torch.aten.slice.Tensor %[[B0]],
+// CHECK:           %[[C16:.*]] = torch.constant.int 16
+// CHECK:           %[[BRZ0:.*]] = torch.aten.slice.Tensor %[[B0]], %[[C0]], %{{.*}}, %[[C16]], %[[C1]] : !torch.vtensor<[24],f32>, {{.*}} -> !torch.vtensor<[4],f32>
+// CHECK:           %[[BRR0:.*]] = torch.aten.slice.Tensor %[[B0]],
+// CHECK:           %[[BRH0:.*]] = torch.aten.slice.Tensor %[[B0]],
+// CHECK:           %[[H0_FWD:.*]] = torch.aten.select.int %arg4, %[[C0]], %[[C0]] : !torch.vtensor<[2,2,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,4],f32>
+// CHECK:           %[[W1:.*]] = torch.aten.select.int %arg1, %[[C0]], %[[C1]] : !torch.vtensor<[2,12,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[12,5],f32>
+// CHECK:           %[[WZ1:.*]] = torch.aten.slice.Tensor %[[W1]], %[[C0]], %[[C0]], %{{.*}}, %[[C1]] : !torch.vtensor<[12,5],f32>, {{.*}} -> !torch.vtensor<[4,5],f32>
+// CHECK:           %[[WR1:.*]] = torch.aten.slice.Tensor %[[W1]],
+// CHECK:           %[[WH1:.*]] = torch.aten.slice.Tensor %[[W1]],
+// CHECK:           %[[R1:.*]] = torch.aten.select.int %arg2, %[[C0]], %[[C1]] : !torch.vtensor<[2,12,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[12,4],f32>
+// CHECK:           %[[RZ1:.*]] = torch.aten.slice.Tensor %[[R1]], %[[C0]], %[[C0]], %{{.*}}, %[[C1]] : !torch.vtensor<[12,4],f32>, {{.*}} -> !torch.vtensor<[4,4],f32>
+// CHECK:           %[[RR1:.*]] = torch.aten.slice.Tensor %[[R1]],
+// CHECK:           %[[RH1:.*]] = torch.aten.slice.Tensor %[[R1]],
+// CHECK:           %[[B1:.*]] = torch.aten.select.int %arg3, %[[C0]], %[[C1]] : !torch.vtensor<[2,24],f32>, !torch.int, !torch.int -> !torch.vtensor<[24],f32>
+// CHECK:           %[[BWZ1:.*]] = torch.aten.slice.Tensor %[[B1]], %[[C0]], %[[C0]], %{{.*}}, %[[C1]] : !torch.vtensor<[24],f32>, {{.*}} -> !torch.vtensor<[4],f32>
+// CHECK:           %[[BWR1:.*]] = torch.aten.slice.Tensor %[[B1]],
+// CHECK:           %[[BWH1:.*]] = torch.aten.slice.Tensor %[[B1]],
+// CHECK:           %[[BRZ1:.*]] = torch.aten.slice.Tensor %[[B1]], %[[C0]], %{{.*}}, %[[C16]], %[[C1]] : !torch.vtensor<[24],f32>, {{.*}} -> !torch.vtensor<[4],f32>
+// CHECK:           %[[BRR1:.*]] = torch.aten.slice.Tensor %[[B1]],
+// CHECK:           %[[BRH1:.*]] = torch.aten.slice.Tensor %[[B1]],
+// CHECK:           %[[H0_REV:.*]] = torch.aten.select.int %arg4, %[[C0]], %[[C1]] : !torch.vtensor<[2,2,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,4],f32>
+// CHECK:           %[[FWD:.*]]:2 = torch.prim.Loop %{{.*}}, %{{.*}}, init(%{{.*}}, %[[H0_FWD]])
+// CHECK:             torch.aten.select.int %arg0, %{{.*}}, %{{.*}} : !torch.vtensor<[3,2,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,5],f32>
+// CHECK:             torch.aten.linear %{{.*}}, %[[WZ0]], %[[BWZ0]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[RZ0]], %[[BRZ0]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[WR0]], %[[BWR0]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[RR0]], %[[BRR0]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[WH0]], %[[BWH0]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[RH0]], %[[BRH0]]
+// CHECK:           %[[YH_FWD:.*]] = torch.aten.unsqueeze %[[FWD]]#1, %[[C0]]
+// CHECK:           %[[Y_FWD:.*]] = torch.aten.unsqueeze %[[FWD]]#0, %[[C1]]
+// CHECK:           %[[DIMS:.*]] = torch.prim.ListConstruct %[[C0]] : (!torch.int) -> !torch.list<int>
+// CHECK:           %[[X_REV:.*]] = torch.aten.flip %arg0, %[[DIMS]]
+// CHECK:           %[[REV:.*]]:2 = torch.prim.Loop %{{.*}}, %{{.*}}, init(%{{.*}}, %[[H0_REV]])
+// CHECK:             torch.aten.select.int %[[X_REV]], %{{.*}}, %{{.*}} : !torch.vtensor<[3,2,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,5],f32>
+// CHECK:             torch.aten.linear %{{.*}}, %[[WZ1]], %[[BWZ1]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[RZ1]], %[[BRZ1]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[WR1]], %[[BWR1]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[RR1]], %[[BRR1]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[WH1]], %[[BWH1]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[RH1]], %[[BRH1]]
+// CHECK:           %[[YH_REV:.*]] = torch.aten.unsqueeze %[[REV]]#1, %[[C0]]
+// CHECK:           %[[Y_REV_U:.*]] = torch.aten.unsqueeze %[[REV]]#0, %[[C1]]
+// CHECK:           %[[Y_REV:.*]] = torch.aten.flip %[[Y_REV_U]], %[[DIMS]]
+// CHECK:           %[[Y_LIST:.*]] = torch.prim.ListConstruct %[[Y_FWD]], %[[Y_REV]]
+// CHECK:           %[[Y:.*]] = torch.aten.cat %[[Y_LIST]], %[[C1]] : !torch.list<vtensor<[3,1,2,4],f32>>, !torch.int -> !torch.vtensor<[3,2,2,4],f32>
+// CHECK:           %[[YH_LIST:.*]] = torch.prim.ListConstruct %[[YH_FWD]], %[[YH_REV]]
+// CHECK:           %[[Y_H:.*]] = torch.aten.cat %[[YH_LIST]], %[[C0]] : !torch.list<vtensor<[1,2,4],f32>>, !torch.int -> !torch.vtensor<[2,2,4],f32>
+// CHECK:           return %[[Y]], %[[Y_H]] : !torch.vtensor<[3,2,2,4],f32>, !torch.vtensor<[2,2,4],f32>
+
+func.func @test_gru_bidirectional(%arg0: !torch.vtensor<[3,2,5],f32>, %arg1: !torch.vtensor<[2,12,5],f32>, %arg2: !torch.vtensor<[2,12,4],f32>, %arg3: !torch.vtensor<[2,24],f32>, %arg4: !torch.vtensor<[2,2,4],f32>) -> (!torch.vtensor<[3,2,2,4],f32>, !torch.vtensor<[2,2,4],f32>) attributes {torch.onnx_meta.ir_version = 9 : si64, torch.onnx_meta.opset_version = 22 : si64} {
+  %none = torch.constant.none
+  %0:2 = torch.operator "onnx.GRU"(%arg0, %arg1, %arg2, %arg3, %none, %arg4) {torch.onnx.direction = "bidirectional", torch.onnx.hidden_size = 4 : si64} : (!torch.vtensor<[3,2,5],f32>, !torch.vtensor<[2,12,5],f32>, !torch.vtensor<[2,12,4],f32>, !torch.vtensor<[2,24],f32>, !torch.none, !torch.vtensor<[2,2,4],f32>) -> (!torch.vtensor<[3,2,2,4],f32>, !torch.vtensor<[2,2,4],f32>)
+  return %0#0, %0#1 : !torch.vtensor<[3,2,2,4],f32>, !torch.vtensor<[2,2,4],f32>
+}
+
+// -----
+
+// Dynamic dim 1 of W: only a static size is checked against 3 * hidden_size.
+// CHECK-LABEL: func.func @test_gru_dynamic_w_hidden
+// CHECK-NOT: torch.operator
+// CHECK: torch.prim.Loop
+func.func @test_gru_dynamic_w_hidden(%arg0: !torch.vtensor<[3,2,5],f32>, %arg1: !torch.vtensor<[1,?,5],f32>, %arg2: !torch.vtensor<[1,12,4],f32>, %arg3: !torch.vtensor<[1,24],f32>) -> (!torch.vtensor<[3,1,2,4],f32>, !torch.vtensor<[1,2,4],f32>) attributes {torch.onnx_meta.ir_version = 9 : si64, torch.onnx_meta.opset_version = 22 : si64} {
+  %0:2 = torch.operator "onnx.GRU"(%arg0, %arg1, %arg2, %arg3) {torch.onnx.hidden_size = 4 : si64} : (!torch.vtensor<[3,2,5],f32>, !torch.vtensor<[1,?,5],f32>, !torch.vtensor<[1,12,4],f32>, !torch.vtensor<[1,24],f32>) -> (!torch.vtensor<[3,1,2,4],f32>, !torch.vtensor<[1,2,4],f32>)
+  return %0#0, %0#1 : !torch.vtensor<[3,1,2,4],f32>, !torch.vtensor<[1,2,4],f32>
 }
