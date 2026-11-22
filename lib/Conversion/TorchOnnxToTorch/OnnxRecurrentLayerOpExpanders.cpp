@@ -455,37 +455,19 @@ LogicalResult OnnxRnnExpander(OpBinder binder,
   int64_t hidden_size = Torch::kUnknownSize;
 
   // Attributes
-  llvm::SmallVector<std::string> activationsList;
-  llvm::SmallVector<std::string> activationNames = {"Tanh"};
-  if (!binder.stringArrayAttr(activationsList, "activations") &&
-      activationsList.size() > 0) {
-    if (activationsList.size() == 1) {
-      activationNames = activationsList;
-    } else if (activationsList.size() == 2) {
-      return rewriter.notifyMatchFailure(
-          binder.op, "Bi-directional RNN is not yet supported, yet two "
-                     "activation function names are provided");
-    } else {
-      return rewriter.notifyMatchFailure(
-          binder.op, "Unsupported number of activation functions: " +
-                         std::to_string(activationsList.size()) +
-                         " are provided.");
-    }
-  }
+  FailureOr<RecurrentDirection> direction =
+      parseRecurrentDirection(binder, rewriter);
+  if (failed(direction))
+    return failure();
+  num_directions = *direction == RecurrentDirection::Bidirectional ? 2 : 1;
+  if (failed(checkNoSequenceLens(binder, rewriter)))
+    return failure();
+
+  // One activation per direction.
   FailureOr<SmallVector<RecurrentActivation>> resolvedActivations =
-      resolveRecurrentActivations(binder, rewriter, activationNames);
+      resolveDirectionActivations(binder, rewriter, num_directions, {"Tanh"});
   if (failed(resolvedActivations))
     return failure();
-  RnnActivations activations{(*resolvedActivations)[0]};
-
-  std::string direction;
-  if (!binder.customOpNameStringAttr(direction, "direction", "forward") &&
-      direction != "forward")
-    return rewriter.notifyMatchFailure(binder.op,
-                                       "Unsupported direction attribute value. "
-                                       "Only 'forward' is supported but '" +
-                                           direction + "' is provided.");
-  num_directions = (direction == "bidirectional") ? 2 : 1;
 
   // hidden_size is required according to the docs,
   // but if we encounter a model that doesn't have it
@@ -504,6 +486,9 @@ LogicalResult OnnxRnnExpander(OpBinder binder,
   if (layout < 0 || layout > 1)
     return rewriter.notifyMatchFailure(binder.op,
                                        "Unsupported layout attribute value.");
+  if (failed(checkPerDirectionShapes(binder, rewriter, num_directions, layout,
+                                     /*numGates=*/1, hidden_size)))
+    return failure();
 
   // Result types
   ValueTensorType yTy, Y_hType;
@@ -547,18 +532,9 @@ LogicalResult OnnxRnnExpander(OpBinder binder,
   auto xTy = cast<ValueTensorType>(X.getType());
   auto wTy = cast<ValueTensorType>(W.getType());
   auto rTy = cast<ValueTensorType>(R.getType());
-  auto wShape = wTy.getSizes();
-  auto xShape = xTy.getSizes();
   auto rShape = rTy.getSizes();
-  assert(wShape.size() == 3);
+  assert(wTy.getSizes().size() == 3);
 
-  int64_t seq_len = xShape[0];
-  int64_t batch_size = xShape[1];
-
-  int64_t w_num_directions = wShape[0];
-  int64_t w_hidden_size = wShape[1];
-
-  int64_t r_num_directions = rShape[0];
   if (rShape[1] != rShape[2])
     return rewriter.notifyMatchFailure(
         binder.op,
@@ -567,46 +543,12 @@ LogicalResult OnnxRnnExpander(OpBinder binder,
   int64_t r_hidden_size = rShape[1];
 
   // validate hidden size
-  if (w_hidden_size != Torch::kUnknownSize && hidden_size != w_hidden_size) {
-    return rewriter.notifyMatchFailure(
-        binder.op, "hidden_size inferred from shape of W (" +
-                       std::to_string(w_hidden_size) +
-                       ") does not match the hidden_size attribute value (" +
-                       std::to_string(hidden_size) + ")");
-  }
-
   if (r_hidden_size != Torch::kUnknownSize && hidden_size != r_hidden_size) {
     return rewriter.notifyMatchFailure(
         binder.op, "hidden_size inferred from shape of R (" +
                        std::to_string(r_hidden_size) +
                        ") does not match the hidden_size attribute value (" +
                        std::to_string(hidden_size) + ")");
-  }
-
-  // validate num directions
-  if (w_num_directions != Torch::kUnknownSize &&
-      w_num_directions != num_directions) {
-    return rewriter.notifyMatchFailure(
-        binder.op, "num_directions from shape of W (" +
-                       std::to_string(w_num_directions) +
-                       ") does not match the direction attribute value (" +
-                       direction + ")");
-  }
-
-  if (r_num_directions != Torch::kUnknownSize &&
-      r_num_directions != num_directions) {
-    return rewriter.notifyMatchFailure(
-        binder.op, "num_directions from shape of R (" +
-                       std::to_string(r_num_directions) +
-                       ") does not match the direction attribute value (" +
-                       direction + ")");
-  }
-
-  if (num_directions != 1) {
-    return rewriter.notifyMatchFailure(
-        binder.op,
-        "Unsupported num_directions. Only 1 is currently supported but " +
-            std::to_string(num_directions) + " is provided.");
   }
 
   assertInputSizesMatch(b, X, W);
@@ -643,47 +585,39 @@ LogicalResult OnnxRnnExpander(OpBinder binder,
     initial_h = refineStateHiddenDim(b, initial_h, hidden_size);
   }
 
-  Value W_forward = getDirection(b, 0, W);
-  Value R_forward = getDirection(b, 0, R);
-  Value B_forward = getDirection(b, 0, B);
-  Value initial_h_forward = getDirection(b, 0, initial_h);
-
   Value cstHiddenSize =
       ConstantIntOp::create(b, intType, b.getI64IntegerAttr(hidden_size));
+  auto biasTy = b.getType<ValueTensorType>(
+      llvm::SmallVector<int64_t>{hidden_size}, wTy.getDtype());
 
-  RnnWeights weights;
-  weights.Wi = W_forward;
-  weights.Ri = R_forward;
-  weights.Wbi = AtenSliceTensorOp::create(
-      b,
-      b.getType<ValueTensorType>(llvm::SmallVector<int64_t>{hidden_size},
-                                 wTy.getDtype()),
-      B_forward, cstZero, cstZero, cstHiddenSize, cstOne);
-  weights.Rbi = AtenSliceTensorOp::create(
-      b,
-      b.getType<ValueTensorType>(llvm::SmallVector<int64_t>{hidden_size},
-                                 wTy.getDtype()),
-      B_forward, cstZero, cstHiddenSize,
-      AtenMulIntOp::create(
-          b, cstHiddenSize,
-          ConstantIntOp::create(b, intType, b.getI64IntegerAttr(2))),
-      cstOne);
+  SmallVector<RnnWeights> weights;
+  SmallVector<Value> initialStates;
+  for (int64_t d = 0; d < num_directions; ++d) {
+    Value B_d = getDirection(b, d, B);
+    RnnWeights weights_d;
+    weights_d.Wi = getDirection(b, d, W);
+    weights_d.Ri = getDirection(b, d, R);
+    weights_d.Wbi = AtenSliceTensorOp::create(b, biasTy, B_d, cstZero, cstZero,
+                                              cstHiddenSize, cstOne);
+    weights_d.Rbi = AtenSliceTensorOp::create(
+        b, biasTy, B_d, cstZero, cstHiddenSize,
+        AtenMulIntOp::create(
+            b, cstHiddenSize,
+            ConstantIntOp::create(b, intType, b.getI64IntegerAttr(2))),
+        cstOne);
+    weights.push_back(weights_d);
+    initialStates.push_back(getDirection(b, d, initial_h));
+  }
 
-  RnnLayerOutput rnnLayerOutput =
-      rnn_layer(b, X, initial_h_forward, weights, activations);
-
-  auto Y_h_unsqueezed_type = b.getType<ValueTensorType>(
-      llvm::SmallVector<int64_t>{num_directions, batch_size, hidden_size},
-      cast<ValueTensorType>(rnnLayerOutput.Y_h.getType()).getDtype());
-  Value Y_h_unsqueezed = AtenUnsqueezeOp::create(b, Y_h_unsqueezed_type,
-                                                 rnnLayerOutput.Y_h, cstZero);
-
-  auto Y_unsqueezed_type = b.getType<ValueTensorType>(
-      llvm::SmallVector<int64_t>{seq_len, num_directions, batch_size,
-                                 hidden_size},
-      cast<ValueTensorType>(rnnLayerOutput.Y_h.getType()).getDtype());
-  Value Y_unsqueezed =
-      AtenUnsqueezeOp::create(b, Y_unsqueezed_type, rnnLayerOutput.Y, cstOne);
+  RecurrentLoopOutput rnnOutput = runRecurrentDirections(
+      b, *direction, X, [&](int64_t d, Value layerX) -> RecurrentLoopOutput {
+        RnnLayerOutput layer =
+            rnn_layer(b, layerX, initialStates[d], weights[d],
+                      RnnActivations{(*resolvedActivations)[d]});
+        return {layer.Y, {layer.Y_h}};
+      });
+  Value Y_unsqueezed = rnnOutput.Y;
+  Value Y_h_unsqueezed = rnnOutput.states[0];
 
   if (layout == 1) {
     Y_h_unsqueezed = StaticTranspose(b, Y_h_unsqueezed, 0, 1);

@@ -234,3 +234,75 @@ func.func @test_rnn_layout1_initial_h(%arg0: !torch.vtensor<[?,3,5],f32>, %arg1:
   %0:2 = torch.operator "onnx.GRU"(%arg0, %arg1, %arg2, %arg3, %none, %arg4) {torch.onnx.hidden_size = 4 : si64, torch.onnx.layout = 1 : si64} : (!torch.vtensor<[?,3,5],f32>, !torch.vtensor<[1,12,5],f32>, !torch.vtensor<[1,12,4],f32>, !torch.vtensor<[1,24],f32>, !torch.none, !torch.vtensor<[1,1,?],f32>) -> (!torch.vtensor<[?,3,1,4],f32>, !torch.vtensor<[?,1,4],f32>)
   return %0#0, %0#1 : !torch.vtensor<[?,3,1,4],f32>, !torch.vtensor<[?,1,4],f32>
 }
+
+// -----
+
+// A reverse RNN runs the layer with the direction-0 parameters on X flipped
+// along the seq dim, then flips Y back.
+
+// CHECK-LABEL:   func.func @test_rnn_reverse(
+// CHECK-DAG:       %[[C0:.*]] = torch.constant.int 0
+// CHECK:           torch.aten.select.int %arg1, %[[C0]], %[[C0]] : !torch.vtensor<[1,4,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[4,5],f32>
+// CHECK:           %[[H0:.*]] = torch.aten.select.int %arg4, %[[C0]], %[[C0]] : !torch.vtensor<[1,2,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,4],f32>
+// CHECK:           %[[DIMS:.*]] = torch.prim.ListConstruct %[[C0]] : (!torch.int) -> !torch.list<int>
+// CHECK:           %[[X_REV:.*]] = torch.aten.flip %arg0, %[[DIMS]] : !torch.vtensor<[3,2,5],f32>, !torch.list<int> -> !torch.vtensor<[3,2,5],f32>
+// CHECK:           %[[LOOP:.*]]:2 = torch.prim.Loop %{{.*}}, %{{.*}}, init(%{{.*}}, %[[H0]])
+// CHECK:             torch.aten.select.int %[[X_REV]], %{{.*}}, %{{.*}} : !torch.vtensor<[3,2,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,5],f32>
+// CHECK:           %[[Y_H:.*]] = torch.aten.unsqueeze %[[LOOP]]#1, %{{.*}} : !torch.vtensor<[2,4],f32>, !torch.int -> !torch.vtensor<[1,2,4],f32>
+// CHECK:           %[[Y_U:.*]] = torch.aten.unsqueeze %[[LOOP]]#0, %{{.*}} : !torch.vtensor<[3,2,4],f32>, !torch.int -> !torch.vtensor<[3,1,2,4],f32>
+// CHECK:           %[[Y:.*]] = torch.aten.flip %[[Y_U]], %[[DIMS]] : !torch.vtensor<[3,1,2,4],f32>, !torch.list<int> -> !torch.vtensor<[3,1,2,4],f32>
+// CHECK:           return %[[Y]], %[[Y_H]]
+
+func.func @test_rnn_reverse(%arg0: !torch.vtensor<[3,2,5],f32>, %arg1: !torch.vtensor<[1,4,5],f32>, %arg2: !torch.vtensor<[1,4,4],f32>, %arg3: !torch.vtensor<[1,8],f32>, %arg4: !torch.vtensor<[1,2,4],f32>) -> (!torch.vtensor<[3,1,2,4],f32>, !torch.vtensor<[1,2,4],f32>) attributes {torch.onnx_meta.ir_version = 9 : si64, torch.onnx_meta.opset_version = 22 : si64} {
+  %none = torch.constant.none
+  %0:2 = torch.operator "onnx.RNN"(%arg0, %arg1, %arg2, %arg3, %none, %arg4) {torch.onnx.direction = "reverse", torch.onnx.hidden_size = 4 : si64} : (!torch.vtensor<[3,2,5],f32>, !torch.vtensor<[1,4,5],f32>, !torch.vtensor<[1,4,4],f32>, !torch.vtensor<[1,8],f32>, !torch.none, !torch.vtensor<[1,2,4],f32>) -> (!torch.vtensor<[3,1,2,4],f32>, !torch.vtensor<[1,2,4],f32>)
+  return %0#0, %0#1 : !torch.vtensor<[3,1,2,4],f32>, !torch.vtensor<[1,2,4],f32>
+}
+
+// -----
+
+// A bidirectional RNN runs direction 0 forward and direction 1 in reverse,
+// each with its own slice of W, R, B and initial_h, and stacks the results
+// forward first.
+
+// CHECK-LABEL:   func.func @test_rnn_bidirectional(
+// CHECK-DAG:       %[[C0:.*]] = torch.constant.int 0
+// CHECK-DAG:       %[[C1:.*]] = torch.constant.int 1
+// CHECK:           %[[B0:.*]] = torch.aten.select.int %arg3, %[[C0]], %[[C0]] : !torch.vtensor<[2,8],f32>, !torch.int, !torch.int -> !torch.vtensor<[8],f32>
+// CHECK:           %[[W0:.*]] = torch.aten.select.int %arg1, %[[C0]], %[[C0]] : !torch.vtensor<[2,4,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[4,5],f32>
+// CHECK:           %[[R0:.*]] = torch.aten.select.int %arg2, %[[C0]], %[[C0]] : !torch.vtensor<[2,4,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[4,4],f32>
+// CHECK:           %[[BW0:.*]] = torch.aten.slice.Tensor %[[B0]], %[[C0]], %[[C0]], %{{.*}}, %[[C1]] : !torch.vtensor<[8],f32>, {{.*}} -> !torch.vtensor<[4],f32>
+// CHECK:           %[[BR0:.*]] = torch.aten.slice.Tensor %[[B0]], %[[C0]], %{{.*}}, %{{.*}}, %[[C1]] : !torch.vtensor<[8],f32>, {{.*}} -> !torch.vtensor<[4],f32>
+// CHECK:           %[[H0_FWD:.*]] = torch.aten.select.int %arg4, %[[C0]], %[[C0]] : !torch.vtensor<[2,2,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,4],f32>
+// CHECK:           %[[B1:.*]] = torch.aten.select.int %arg3, %[[C0]], %[[C1]] : !torch.vtensor<[2,8],f32>, !torch.int, !torch.int -> !torch.vtensor<[8],f32>
+// CHECK:           %[[W1:.*]] = torch.aten.select.int %arg1, %[[C0]], %[[C1]] : !torch.vtensor<[2,4,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[4,5],f32>
+// CHECK:           %[[R1:.*]] = torch.aten.select.int %arg2, %[[C0]], %[[C1]] : !torch.vtensor<[2,4,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[4,4],f32>
+// CHECK:           %[[BW1:.*]] = torch.aten.slice.Tensor %[[B1]], %[[C0]], %[[C0]], %{{.*}}, %[[C1]] : !torch.vtensor<[8],f32>, {{.*}} -> !torch.vtensor<[4],f32>
+// CHECK:           %[[BR1:.*]] = torch.aten.slice.Tensor %[[B1]], %[[C0]], %{{.*}}, %{{.*}}, %[[C1]] : !torch.vtensor<[8],f32>, {{.*}} -> !torch.vtensor<[4],f32>
+// CHECK:           %[[H0_REV:.*]] = torch.aten.select.int %arg4, %[[C0]], %[[C1]] : !torch.vtensor<[2,2,4],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,4],f32>
+// CHECK:           %[[FWD:.*]]:2 = torch.prim.Loop %{{.*}}, %{{.*}}, init(%{{.*}}, %[[H0_FWD]])
+// CHECK:             torch.aten.select.int %arg0, %{{.*}}, %{{.*}} : !torch.vtensor<[3,2,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,5],f32>
+// CHECK:             torch.aten.linear %{{.*}}, %[[W0]], %[[BW0]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[R0]], %[[BR0]]
+// CHECK:           %[[YH_FWD:.*]] = torch.aten.unsqueeze %[[FWD]]#1, %[[C0]]
+// CHECK:           %[[Y_FWD:.*]] = torch.aten.unsqueeze %[[FWD]]#0, %[[C1]]
+// CHECK:           %[[DIMS:.*]] = torch.prim.ListConstruct %[[C0]] : (!torch.int) -> !torch.list<int>
+// CHECK:           %[[X_REV:.*]] = torch.aten.flip %arg0, %[[DIMS]]
+// CHECK:           %[[REV:.*]]:2 = torch.prim.Loop %{{.*}}, %{{.*}}, init(%{{.*}}, %[[H0_REV]])
+// CHECK:             torch.aten.select.int %[[X_REV]], %{{.*}}, %{{.*}} : !torch.vtensor<[3,2,5],f32>, !torch.int, !torch.int -> !torch.vtensor<[2,5],f32>
+// CHECK:             torch.aten.linear %{{.*}}, %[[W1]], %[[BW1]]
+// CHECK:             torch.aten.linear %{{.*}}, %[[R1]], %[[BR1]]
+// CHECK:           %[[YH_REV:.*]] = torch.aten.unsqueeze %[[REV]]#1, %[[C0]]
+// CHECK:           %[[Y_REV_U:.*]] = torch.aten.unsqueeze %[[REV]]#0, %[[C1]]
+// CHECK:           %[[Y_REV:.*]] = torch.aten.flip %[[Y_REV_U]], %[[DIMS]]
+// CHECK:           %[[Y_LIST:.*]] = torch.prim.ListConstruct %[[Y_FWD]], %[[Y_REV]]
+// CHECK:           %[[Y:.*]] = torch.aten.cat %[[Y_LIST]], %[[C1]] : !torch.list<vtensor<[3,1,2,4],f32>>, !torch.int -> !torch.vtensor<[3,2,2,4],f32>
+// CHECK:           %[[YH_LIST:.*]] = torch.prim.ListConstruct %[[YH_FWD]], %[[YH_REV]]
+// CHECK:           %[[Y_H:.*]] = torch.aten.cat %[[YH_LIST]], %[[C0]] : !torch.list<vtensor<[1,2,4],f32>>, !torch.int -> !torch.vtensor<[2,2,4],f32>
+// CHECK:           return %[[Y]], %[[Y_H]] : !torch.vtensor<[3,2,2,4],f32>, !torch.vtensor<[2,2,4],f32>
+
+func.func @test_rnn_bidirectional(%arg0: !torch.vtensor<[3,2,5],f32>, %arg1: !torch.vtensor<[2,4,5],f32>, %arg2: !torch.vtensor<[2,4,4],f32>, %arg3: !torch.vtensor<[2,8],f32>, %arg4: !torch.vtensor<[2,2,4],f32>) -> (!torch.vtensor<[3,2,2,4],f32>, !torch.vtensor<[2,2,4],f32>) attributes {torch.onnx_meta.ir_version = 9 : si64, torch.onnx_meta.opset_version = 22 : si64} {
+  %none = torch.constant.none
+  %0:2 = torch.operator "onnx.RNN"(%arg0, %arg1, %arg2, %arg3, %none, %arg4) {torch.onnx.direction = "bidirectional", torch.onnx.hidden_size = 4 : si64} : (!torch.vtensor<[3,2,5],f32>, !torch.vtensor<[2,4,5],f32>, !torch.vtensor<[2,4,4],f32>, !torch.vtensor<[2,8],f32>, !torch.none, !torch.vtensor<[2,2,4],f32>) -> (!torch.vtensor<[3,2,2,4],f32>, !torch.vtensor<[2,2,4],f32>)
+  return %0#0, %0#1 : !torch.vtensor<[3,2,2,4],f32>, !torch.vtensor<[2,2,4],f32>
+}

@@ -224,6 +224,16 @@ class OnnxLSTM_bidirectional_reverse_alpha(_RecurrentActivationTest):
     _BETA = [0.4]
 
 
+# A bidirectional RNN uses LeakyRelu forward and HardSigmoid in reverse, which
+# takes the second alpha and the only beta.
+@register_onnx_test
+class OnnxRNN_bidirectional_reverse_alpha(_RecurrentActivationTest):
+    _DIRECTION = "bidirectional"
+    _ACTIVATIONS = ["LeakyRelu", "HardSigmoid"]
+    _ALPHA = [0.3, 0.2]
+    _BETA = [0.4]
+
+
 # ThresholdedRelu keeps x only where x > alpha. With zero weights and an input
 # bias of alpha, every pre-activation equals alpha, so every output is 0.
 @register_onnx_test
@@ -437,5 +447,42 @@ class OnnxLSTM_bidirectional_dynamicSeq(_RecurrentDirectionTest):
     _DIRECTION = "bidirectional"
 
     @annotate_inputs([("X", torch.float32, [-1, 3, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxRNN_reverse(_RecurrentDirectionTest):
+    _OP = "RNN"
+
+    @annotate_inputs([("X", torch.float32, [4, 3, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxRNN_reverse_dynamicSeq(_RecurrentDirectionTest):
+    _OP = "RNN"
+
+    @annotate_inputs([("X", torch.float32, [-1, 3, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxRNN_bidirectional(_RecurrentDirectionTest):
+    _OP, _DIRECTION = "RNN", "bidirectional"
+
+    @annotate_inputs([("X", torch.float32, [4, 3, 5])])
+    def graph(self):
+        return self._graph()
+
+
+@register_onnx_test
+class OnnxRNN_bidirectional_dynamicBatch(_RecurrentDirectionTest):
+    _OP, _DIRECTION = "RNN", "bidirectional"
+    _BATCH = 2
+
+    @annotate_inputs([("X", torch.float32, [4, -1, 5])])
     def graph(self):
         return self._graph()
