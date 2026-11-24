@@ -5691,6 +5691,82 @@ def AtenEmbeddingBagLastBagBoundaryModule_basic(module, tu: TestUtils):
     module.forward(weight, indices, offsets)
 
 
+class AtenEmbeddingBagPerSampleWeightsModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args(
+        [
+            None,
+            ([-1, -1], torch.float32, True),
+            ([-1], torch.int64, True),
+            ([-1], torch.int64, True),
+            ([-1], torch.float32, True),
+        ]
+    )
+    def forward(self, weight, indices, offsets, per_sample_weights):
+        return torch.ops.aten.embedding_bag(
+            weight,
+            indices,
+            offsets,
+            scale_grad_by_freq=False,
+            mode=0,
+            sparse=False,
+            per_sample_weights=per_sample_weights,
+            include_last_offset=False,
+            padding_idx=None,
+        )
+
+
+@register_test_case(module_factory=lambda: AtenEmbeddingBagPerSampleWeightsModule())
+def AtenEmbeddingBagPerSampleWeightsModule_basic(module, tu: TestUtils):
+    weight = tu.rand(10, 4)
+    indices = torch.LongTensor([1, 1, 1, 0, 7, 9, 3])
+    offsets = torch.LongTensor([0, 2, 5])
+    per_sample_weights = tu.rand(7, low=-2.0, high=2.0)
+    module.forward(weight, indices, offsets, per_sample_weights)
+
+
+class AtenEmbeddingBagPerSampleWeightsF16Module(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args(
+        [
+            None,
+            ([-1, -1], torch.float16, True),
+            ([-1], torch.int64, True),
+            ([-1], torch.int64, True),
+            ([-1], torch.float16, True),
+        ]
+    )
+    def forward(self, weight, indices, offsets, per_sample_weights):
+        return torch.ops.aten.embedding_bag(
+            weight,
+            indices,
+            offsets,
+            scale_grad_by_freq=False,
+            mode=0,
+            sparse=False,
+            per_sample_weights=per_sample_weights,
+            include_last_offset=False,
+            padding_idx=None,
+        )
+
+
+@register_test_case(module_factory=lambda: AtenEmbeddingBagPerSampleWeightsF16Module())
+def AtenEmbeddingBagPerSampleWeightsF16Module_basic(module, tu: TestUtils):
+    # Each weighted row and the partial sums of bag 0 exceed the f16 range,
+    # while the bag sums fit in it.
+    weight = torch.tensor([[60000.0, 1.0], [-60000.0, 2.0]], dtype=torch.float16)
+    indices = torch.LongTensor([0, 1, 0, 0, 1])
+    offsets = torch.LongTensor([0, 2])
+    per_sample_weights = torch.tensor([2.0, 2.0, 1.0, 1.0, 1.0], dtype=torch.float16)
+    module.forward(weight, indices, offsets, per_sample_weights)
+
+
 # ==============================================================================
 
 

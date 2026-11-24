@@ -189,16 +189,17 @@ namespace {
 //         for k in range(embedding_size): <- dim2
 //             if(offsets[i] <= j and j < offsets[i+1]):
 //                 output_tensor[i][k] = output_tensor[i][k] +
-//                 weight[indices[j]][k]
+//                 weight[indices[j]][k] * per_sample_weights[j]
 //             else:
 //                 break
 //
 // Indexing maps for linalg::Generic ops
 //
 //
-// indices_indexing_map  = (d0, d1, d2) -> (d1)
-// offset_indexing_map   = (d0, d1, d2) -> (d0)
-// output_indexing_map   = (d0, d1, d2) -> (d0, d2)
+// indices_indexing_map            = (d0, d1, d2) -> (d1)
+// offset_indexing_map             = (d0, d1, d2) -> (d0)
+// per_sample_weights_indexing_map = (d0, d1, d2) -> (d1)  (if present)
+// output_indexing_map             = (d0, d1, d2) -> (d0, d2)
 //
 // TODO: Find an optimal lowering.
 //       current lowering is not optimal for bags of large embeddings.
@@ -256,6 +257,11 @@ public:
       return rewriter.notifyMatchFailure(op, "offsets much be a vector");
 
     Type weightElemTy = weightTy.getElementType();
+    // Accumulate f16 and bf16 bags in f32, as PyTorch does, so that weighted
+    // rows and partial sums outside the narrow type's range do not overflow.
+    Type accElemTy = weightElemTy;
+    if (isa<Float16Type, BFloat16Type>(weightElemTy))
+      accElemTy = rewriter.getF32Type();
 
     int64_t iterationMapDimension = weightTy.getRank() + indicesTy.getRank();
     SmallVector<AffineExpr> indicesExpr;
@@ -279,11 +285,18 @@ public:
         AffineMap::get(/*dimCount=*/iterationMapDimension, /*symbolCount=*/0,
                        outputExpr, context);
 
-    SmallVector<AffineMap, 3> indexingMaps = {
-        indicesIndexingMap,
-        offsetIndexingMap,
-        outputIndexingMap,
-    };
+    SmallVector<Value> inputs{indices, offsets};
+    SmallVector<AffineMap> indexingMaps{indicesIndexingMap, offsetIndexingMap};
+    // Each per-sample weight scales the weight row selected by the index at
+    // the same position, so it shares the indices map.
+    Value perSampleWeights = adaptor.getPerSampleWeights();
+    bool hasPerSampleWeights =
+        !isa<Torch::NoneType>(perSampleWeights.getType());
+    if (hasPerSampleWeights) {
+      inputs.push_back(perSampleWeights);
+      indexingMaps.push_back(indicesIndexingMap);
+    }
+    indexingMaps.push_back(outputIndexingMap);
 
     // Reduce along the indices dim
     SmallVector<utils::IteratorType> iteratorTypes(
@@ -298,7 +311,7 @@ public:
       SmallVector<Value> sizes{getDimOp(rewriter, loc, offsets, 0),
                                embeddingDim};
 
-      initTensor = createZeroInitTensor(rewriter, loc, sizes, weightElemTy);
+      initTensor = createZeroInitTensor(rewriter, loc, sizes, accElemTy);
       offsetsLength = getDimOp(rewriter, loc, offsets, 0);
       indicesLength = getDimOp(rewriter, loc, indices, 0);
     } else {
@@ -309,14 +322,13 @@ public:
 
     Value embeddingBagResult =
         linalg::GenericOp::create(
-            rewriter, loc, initTensor.getType(), ValueRange{indices, offsets},
-            initTensor,
+            rewriter, loc, initTensor.getType(), inputs, initTensor,
             /*indexingMaps=*/indexingMaps,
             /*iteratorTypes=*/iteratorTypes,
             [&](OpBuilder &b, Location loc, ValueRange args) {
               Value indexInIndices = args[0];
               Value offsetsI = args[1];
-              Value initTensorElem = args[2];
+              Value initTensorElem = args.back();
 
               Value indexI = linalg::IndexOp::create(b, loc, /*value=*/0);
               Value indexIToInt = castIndexToInt64(b, loc, indexI);
@@ -367,8 +379,15 @@ public:
               indexIntoWeight.push_back(castIntToIndex(b, loc, indexInIndices));
               indexIntoWeight.push_back(
                   linalg::IndexOp::create(b, loc, /*value=*/2));
-              Value weightElem =
-                  tensor::ExtractOp::create(b, loc, weight, indexIntoWeight);
+              Value weightElem = convertScalarToDtype(
+                  b, loc,
+                  tensor::ExtractOp::create(b, loc, weight, indexIntoWeight),
+                  accElemTy);
+
+              if (hasPerSampleWeights)
+                weightElem = arith::MulFOp::create(
+                    b, loc, weightElem,
+                    convertScalarToDtype(b, loc, args[2], accElemTy));
 
               Value addResult =
                   arith::AddFOp::create(b, loc, weightElem, initTensorElem);
@@ -377,6 +396,9 @@ public:
               linalg::YieldOp::create(b, loc, select);
             })
             .getResult(0);
+    if (accElemTy != weightElemTy)
+      embeddingBagResult = torch_to_linalg::convertTensorToElementType(
+          rewriter, loc, embeddingBagResult, weightElemTy);
 
     // cast outputType.
     auto restulType0 = typeConverter->convertType(op->getResult(0).getType());
