@@ -78,6 +78,8 @@ ONNX_E2E_TOSA_XFAIL_SET = {
     "OnnxRNN_affine_beta_only",
     "OnnxRNN_affine_no_parameters",
     "OnnxRNN_scaledtanh_no_parameters",
+    # Loop lowers to torch.prim.Loop, which has no torch -> tosa lowering.
+    "OnnxLoop_constTrueInitComputedCond",
     "OnnxLSTM_alpha_order",
     "OnnxLSTM_bidirectional_reverse_alpha",
     "OnnxRNN_thresholdedrelu_at_alpha",

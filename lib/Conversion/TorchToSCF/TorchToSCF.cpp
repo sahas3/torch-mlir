@@ -89,14 +89,21 @@ public:
           op, "could not convert PrimLoopOp outputs");
 
     // Create scf.while operation using the operands of torch::primloop. The
-    // first argument of the primloop correspond to `maxTripCount`  which
-    // can be omitted in the `scf.while` operation.
+    // loop carries an iteration counter, the condition and the iter args. The
+    // loop runs while the condition holds and the counter is below
+    // `maxTripCount`.
+    Location loc = op.getLoc();
+    Value maxTripCount = adaptor.getMaxTripCount();
     Value condition = adaptor.getInitialCondition();
     ValueRange iterArgsInit = adaptor.getIterArgsInit();
-    SmallVector<Value> scfWhileOpOperands{condition};
+    Value counterInit =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI64IntegerAttr(0));
+    SmallVector<Value> scfWhileOpOperands{counterInit, condition};
     scfWhileOpOperands.append(iterArgsInit.begin(), iterArgsInit.end());
-    auto scfWhileOp = scf::WhileOp::create(rewriter, op->getLoc(),
-                                           newResultTypes, scfWhileOpOperands);
+    SmallVector<Type> scfWhileOpResultTypes{rewriter.getI64Type()};
+    scfWhileOpResultTypes.append(newResultTypes.begin(), newResultTypes.end());
+    auto scfWhileOp = scf::WhileOp::create(rewriter, loc, scfWhileOpResultTypes,
+                                           scfWhileOpOperands);
 
     // Populate the before region of the scf.while operation. The `before`
     // region will have only one block and the arguments of the block must match
@@ -112,11 +119,19 @@ public:
         beforeRegionArgTypes, beforeRegionArgLocs);
 
     rewriter.setInsertionPointToEnd(beforeBlock);
-    // Fetch the condition passed as the iter argument. Pass rest of the
-    // arguments to the after block.
-    auto scfConditionOp = scf::ConditionOp::create(
-        rewriter, op.getLoc(), beforeBlock->getArgument(0),
-        beforeBlock->getArguments().drop_front());
+    // Continue while the condition passed as the iter argument holds and the
+    // counter is below `maxTripCount`. Pass the counter and the iter args to
+    // the after block.
+    Value counter = beforeBlock->getArgument(0);
+    Value belowMaxTripCount = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::slt, counter, maxTripCount);
+    Value shouldRun = arith::AndIOp::create(
+        rewriter, loc, beforeBlock->getArgument(1), belowMaxTripCount);
+    SmallVector<Value> afterBlockArgs{counter};
+    llvm::append_range(afterBlockArgs,
+                       beforeBlock->getArguments().drop_front(2));
+    auto scfConditionOp =
+        scf::ConditionOp::create(rewriter, loc, shouldRun, afterBlockArgs);
 
     // Populate the after region.
     if (!scfWhileOp.getAfter().empty())
@@ -133,11 +148,8 @@ public:
         afterRegionArgTypes, afterRegionArgLocs);
 
     // Rewrite uses of the torch loop block arguments to the new while-loop
-    // "after" arguments. Leave the induction variable of prim loop(first
-    // argument) because while like prim loops does not use the induction
-    // variable.
-    for (const auto &barg :
-         enumerate(op.getRegion().front().getArguments().drop_front())) {
+    // "after" arguments. The induction variable maps to the counter.
+    for (const auto &barg : enumerate(op.getRegion().front().getArguments())) {
       Value to = afterBlock->getArgument(barg.index());
       Type targetType = to.getType();
       Value torchArg = to;
@@ -157,7 +169,7 @@ public:
         torchArg = typeConverter->materializeSourceConversion(
             rewriter, scfWhileOp.getLoc(), targetType, {to});
       } else if (auto tty = dyn_cast<RankedTensorType>(targetType)) {
-        targetType = op.getIterArgsInit()[barg.index()].getType();
+        targetType = op.getIterArgsInit()[barg.index() - 1].getType();
         torchArg = typeConverter->materializeSourceConversion(
             rewriter, scfWhileOp.getLoc(), targetType, {to});
       }
@@ -172,7 +184,11 @@ public:
          llvm::make_early_inc_range(op.getRegion().front().getOperations())) {
       if (auto primLoopConditionOp = dyn_cast<PrimLoopConditionOp>(operation)) {
         // Fix up the terminator.
-        SmallVector<Value> loopConditionIterArgs;
+        Value one = arith::ConstantOp::create(rewriter, loc,
+                                              rewriter.getI64IntegerAttr(1));
+        Value nextCounter = arith::AddIOp::create(
+            rewriter, loc, afterBlock->getArgument(0), one);
+        SmallVector<Value> loopConditionIterArgs{nextCounter};
         Value torchShouldContinue = primLoopConditionOp.getShouldContinue();
         Value shouldContinue = typeConverter->materializeTargetConversion(
             rewriter, scfWhileOp->getLoc(),
@@ -198,7 +214,7 @@ public:
         operation.moveBefore(afterBlock, afterBlock->end());
       }
     }
-    rewriter.replaceOp(op, scfWhileOp->getResults());
+    rewriter.replaceOp(op, scfWhileOp->getResults().drop_front());
     return success();
   }
 };

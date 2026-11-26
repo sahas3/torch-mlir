@@ -69,22 +69,29 @@ func.func @aten.prim.if$nested(%arg0: !torch.bool, %arg1: !torch.bool) -> !torch
 // CHECK-SAME:  (%[[ARG0:.*]]: !torch.int) -> !torch.float {
 // CHECK:         %[[TORCH_FLOAT_VAL:.*]] = torch.constant.float
 // CHECK-NEXT:    %[[FLOAT_VAL:.*]] = torch_c.to_f64 %[[TORCH_FLOAT_VAL]]
-// CHECK-NEXT:    %[[MAX_TRIP_COUNT:.*]] = torch.constant.int 9223372036854775807
+// CHECK-NEXT:    %[[TORCH_MAX_TRIP_COUNT:.*]] = torch.constant.int 9223372036854775807
+// CHECK-NEXT:    %[[MAX_TRIP_COUNT:.*]] = arith.constant 9223372036854775807 : i64
 // CHECK-NEXT:    %[[TORCH_CONDITION:.*]] = torch.aten.lt.float_int %[[TORCH_FLOAT_VAL]], %[[ARG0]]
 // CHECK-NEXT:    %[[CONDITION:.*]] = torch_c.to_i1 %[[TORCH_CONDITION]]
-// CHECK-NEXT:    %[[LOOP:.*]] = scf.while
-// CHECK-SAME:    (%[[LOOP_CONDITION:.*]] = %[[CONDITION]], %[[LOOP_ARG:.*]] = %[[FLOAT_VAL]]) : (i1, f64) -> f64 {
-// CHECK-NEXT:      scf.condition(%[[LOOP_CONDITION]]) %[[LOOP_ARG]]
+// CHECK-NEXT:    %[[ZERO:.*]] = arith.constant 0 : i64
+// CHECK-NEXT:    %[[LOOP:.*]]:2 = scf.while
+// CHECK-SAME:    (%[[COUNTER:.*]] = %[[ZERO]], %[[LOOP_CONDITION:.*]] = %[[CONDITION]], %[[LOOP_ARG:.*]] = %[[FLOAT_VAL]]) : (i64, i1, f64) -> (i64, f64) {
+// CHECK-NEXT:      %[[BELOW_MAX:.*]] = arith.cmpi slt, %[[COUNTER]], %[[MAX_TRIP_COUNT]] : i64
+// CHECK-NEXT:      %[[KEEP_LOOPING:.*]] = arith.andi %[[LOOP_CONDITION]], %[[BELOW_MAX]] : i1
+// CHECK-NEXT:      scf.condition(%[[KEEP_LOOPING]]) %[[COUNTER]], %[[LOOP_ARG]]
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:    ^bb0(%[[BLOCK_ARG:.*]]: f64):
+// CHECK-NEXT:    ^bb0(%[[BLOCK_COUNTER:.*]]: i64, %[[BLOCK_ARG:.*]]: f64):
+// CHECK-NEXT:      torch_c.from_i64 %[[BLOCK_COUNTER]]
 // CHECK-NEXT:      %[[TORCH_BLOCK_ARG:.*]] = torch_c.from_f64 %[[BLOCK_ARG]]
 // CHECK-NEXT:      %[[TORCH_VAL:.*]] = torch.aten.mul.float %[[TORCH_BLOCK_ARG]], %[[TORCH_BLOCK_ARG]]
 // CHECK-NEXT:      %[[TORCH_BLOCK_CONDITION:.*]] = torch.aten.lt.float_int %[[TORCH_VAL]], %[[ARG0]]
+// CHECK-NEXT:      %[[ONE:.*]] = arith.constant 1 : i64
+// CHECK-NEXT:      %[[NEXT_COUNTER:.*]] = arith.addi %[[BLOCK_COUNTER]], %[[ONE]] : i64
 // CHECK-NEXT:      %[[BLOCK_CONDITION:.*]] = torch_c.to_i1 %[[TORCH_BLOCK_CONDITION]]
 // CHECK-NEXT:      %[[VAL:.*]] = torch_c.to_f64 %[[TORCH_VAL]]
-// CHECK-NEXT:      scf.yield %[[BLOCK_CONDITION]], %[[VAL]] : i1, f64
+// CHECK-NEXT:      scf.yield %[[NEXT_COUNTER]], %[[BLOCK_CONDITION]], %[[VAL]] : i64, i1, f64
 // CHECK-NEXT:    }
-// CHECK-NEXT:    %[[TORCH_LOOP:.*]] = torch_c.from_f64 %[[LOOP]]
+// CHECK-NEXT:    %[[TORCH_LOOP:.*]] = torch_c.from_f64 %[[LOOP]]#1
 // CHECK-NEXT:    return %[[TORCH_LOOP]] : !torch.float
 func.func @torch.prim.loop$while(%arg0: !torch.int) -> !torch.float {
   %float3.200000e00 = torch.constant.float 3.200000e+00
@@ -103,29 +110,36 @@ func.func @torch.prim.loop$while(%arg0: !torch.int) -> !torch.float {
 // CHECK-SAME:  () -> (!torch.float, !torch.float) {
 // CHECK:         %[[TORCH_FLOAT_VAL_0:.*]] = torch.constant.float
 // CHECK-NEXT:    %[[FLOAT_VAL_0:.*]] = torch_c.to_f64 %[[TORCH_FLOAT_VAL_0]]
-// CHECK-NEXT:    %[[MAX_TRIP_COUNT:.*]] = torch.constant.int 9223372036854775807
+// CHECK-NEXT:    %[[TORCH_MAX_TRIP_COUNT:.*]] = torch.constant.int 9223372036854775807
+// CHECK-NEXT:    %[[MAX_TRIP_COUNT:.*]] = arith.constant 9223372036854775807 : i64
 // CHECK-NEXT:    %[[TORCH_FLOAT_VAL_1:.*]] = torch.constant.float
 // CHECK-NEXT:    %[[FLOAT_VAL_1:.*]] = torch_c.to_f64 %[[TORCH_FLOAT_VAL_1]]
 // CHECK-NEXT:    %[[TORCH_CONDITION:.*]] = torch.aten.lt.float %[[TORCH_FLOAT_VAL_0]], %[[TORCH_FLOAT_VAL_1]]
 // CHECK-NEXT:    %[[CONDITION:.*]] = torch_c.to_i1 %[[TORCH_CONDITION]]
-// CHECK-NEXT:    %[[LOOP:.*]]:2 = scf.while
-// CHECK-SAME:    (%[[LOOP_CONDITION:.*]] = %[[CONDITION]], %[[LOOP_ARG_0:.*]] = %[[FLOAT_VAL_0]], %[[LOOP_ARG_1:.*]] = %[[FLOAT_VAL_1]]) : (i1, f64, f64) -> (f64, f64) {
-// CHECK-NEXT:      scf.condition(%[[LOOP_CONDITION]]) %[[LOOP_ARG_0]], %[[LOOP_ARG_1]]
+// CHECK-NEXT:    %[[ZERO:.*]] = arith.constant 0 : i64
+// CHECK-NEXT:    %[[LOOP:.*]]:3 = scf.while
+// CHECK-SAME:    (%[[COUNTER:.*]] = %[[ZERO]], %[[LOOP_CONDITION:.*]] = %[[CONDITION]], %[[LOOP_ARG_0:.*]] = %[[FLOAT_VAL_0]], %[[LOOP_ARG_1:.*]] = %[[FLOAT_VAL_1]]) : (i64, i1, f64, f64) -> (i64, f64, f64) {
+// CHECK-NEXT:      %[[BELOW_MAX:.*]] = arith.cmpi slt, %[[COUNTER]], %[[MAX_TRIP_COUNT]] : i64
+// CHECK-NEXT:      %[[KEEP_LOOPING:.*]] = arith.andi %[[LOOP_CONDITION]], %[[BELOW_MAX]] : i1
+// CHECK-NEXT:      scf.condition(%[[KEEP_LOOPING]]) %[[COUNTER]], %[[LOOP_ARG_0]], %[[LOOP_ARG_1]]
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:    ^bb0(%[[BLOCK_ARG_0:.*]]: f64, %[[BLOCK_ARG_1:.*]]: f64):
+// CHECK-NEXT:    ^bb0(%[[BLOCK_COUNTER:.*]]: i64, %[[BLOCK_ARG_0:.*]]: f64, %[[BLOCK_ARG_1:.*]]: f64):
+// CHECK-NEXT:      torch_c.from_i64 %[[BLOCK_COUNTER]]
 // CHECK-NEXT:      %[[TORCH_BLOCK_ARG_0:.*]] = torch_c.from_f64 %[[BLOCK_ARG_0]]
 // CHECK-NEXT:      %[[TORCH_BLOCK_ARG_1:.*]] = torch_c.from_f64 %[[BLOCK_ARG_1]]
 // CHECK-NEXT:      %[[TORCH_VAL_0:.*]] = torch.aten.mul.float %[[TORCH_BLOCK_ARG_0]], %[[TORCH_BLOCK_ARG_0]]
 // CHECK-NEXT:      %[[TORCH_BLOCK_CONDITION:.*]] = torch.aten.lt.float %[[TORCH_VAL_0]], %[[TORCH_BLOCK_ARG_1]]
 // CHECK-NEXT:      %[[CONSTANT:.*]] = torch.constant.int -2
 // CHECK-NEXT:      %[[TORCH_VAL_1:.*]] = torch.aten.add.float_int %[[TORCH_BLOCK_ARG_1]], %[[CONSTANT]]
+// CHECK-NEXT:      %[[ONE:.*]] = arith.constant 1 : i64
+// CHECK-NEXT:      %[[NEXT_COUNTER:.*]] = arith.addi %[[BLOCK_COUNTER]], %[[ONE]] : i64
 // CHECK-NEXT:      %[[BLOCK_CONDITION:.*]] = torch_c.to_i1 %[[TORCH_BLOCK_CONDITION]]
 // CHECK-NEXT:      %[[VAL_0:.*]] = torch_c.to_f64 %[[TORCH_VAL_0]]
 // CHECK-NEXT:      %[[VAL_1:.*]] = torch_c.to_f64 %[[TORCH_VAL_1]]
-// CHECK-NEXT:      scf.yield %[[BLOCK_CONDITION]], %[[VAL_0]], %[[VAL_1]] : i1, f64, f64
+// CHECK-NEXT:      scf.yield %[[NEXT_COUNTER]], %[[BLOCK_CONDITION]], %[[VAL_0]], %[[VAL_1]] : i64, i1, f64, f64
 // CHECK-NEXT:    }
-// CHECK-DAG:    %[[TORCH_LOOP_0:.*]] = torch_c.from_f64 %[[LOOP]]#0
-// CHECK-DAG:    %[[TORCH_LOOP_1:.*]] = torch_c.from_f64 %[[LOOP]]#1
+// CHECK-DAG:    %[[TORCH_LOOP_0:.*]] = torch_c.from_f64 %[[LOOP]]#1
+// CHECK-DAG:    %[[TORCH_LOOP_1:.*]] = torch_c.from_f64 %[[LOOP]]#2
 // CHECK-NEXT:    return %[[TORCH_LOOP_0]], %[[TORCH_LOOP_1]] : !torch.float, !torch.float
 func.func @torch.prim.loop$while_with_multiple_values() -> (!torch.float, !torch.float) {
   %float3.200000e00 = torch.constant.float 3.200000e+00
@@ -141,6 +155,53 @@ func.func @torch.prim.loop$while_with_multiple_values() -> (!torch.float, !torch
     torch.prim.Loop.condition %3, iter(%2, %5 : !torch.float, !torch.float)
   } : (!torch.int, !torch.bool, !torch.float, !torch.float) -> (!torch.float, !torch.float)
   return %1#0, %1#1 : !torch.float, !torch.float
+}
+
+// A constant true initial condition does not make the loop for-like when the
+// body computes the condition.
+// CHECK-LABEL: func.func @torch.prim.Loop$while_const_true_initial_condition
+// CHECK-SAME:  (%[[TORCH_ARG0:.*]]: !torch.int, %[[LIMIT:.*]]: !torch.float) -> !torch.float {
+// CHECK:         %[[MAX_TRIP_COUNT:.*]] = torch_c.to_i64 %[[TORCH_ARG0]]
+// CHECK:         %[[LOOP:.*]]:2 = scf.while (%[[COUNTER:.*]] = %{{.*}}, %[[LOOP_CONDITION:.*]] = %{{.*}}, %{{.*}} = %{{.*}}) : (i64, i1, f64) -> (i64, f64) {
+// CHECK-NEXT:      %[[BELOW_MAX:.*]] = arith.cmpi slt, %[[COUNTER]], %[[MAX_TRIP_COUNT]] : i64
+// CHECK-NEXT:      %[[KEEP_LOOPING:.*]] = arith.andi %[[LOOP_CONDITION]], %[[BELOW_MAX]] : i1
+// CHECK-NEXT:      scf.condition(%[[KEEP_LOOPING]])
+// CHECK:         } do {
+// CHECK:           %[[TORCH_BLOCK_CONDITION:.*]] = torch.aten.lt.float %{{.*}}, %[[LIMIT]]
+// CHECK:           %[[BLOCK_CONDITION:.*]] = torch_c.to_i1 %[[TORCH_BLOCK_CONDITION]]
+// CHECK:           scf.yield %{{.*}}, %[[BLOCK_CONDITION]], %{{.*}} : i64, i1, f64
+// CHECK-NOT:     scf.for
+func.func @torch.prim.Loop$while_const_true_initial_condition(%arg0: !torch.int, %arg1: !torch.float) -> !torch.float {
+  %true = torch.constant.bool true
+  %float1 = torch.constant.float 1.0
+  %float2 = torch.constant.float 2.0
+  %0 = torch.prim.Loop %arg0, %true, init(%float1) {
+  ^bb0(%arg2: !torch.int, %arg3: !torch.float):
+    %1 = torch.aten.mul.float %arg3, %float2 : !torch.float, !torch.float -> !torch.float
+    %2 = torch.aten.lt.float %1, %arg1 : !torch.float, !torch.float -> !torch.bool
+    torch.prim.Loop.condition %2, iter(%1 : !torch.float)
+  } : (!torch.int, !torch.bool, !torch.float) -> !torch.float
+  return %0 : !torch.float
+}
+
+// The induction variable of a while-like loop is the iteration counter.
+// CHECK-LABEL: func.func @torch.prim.Loop$while_uses_induction_variable
+// CHECK:         scf.while
+// CHECK:         } do {
+// CHECK-NEXT:    ^bb0(%[[BLOCK_COUNTER:.*]]: i64, %[[BLOCK_ARG:.*]]: f64):
+// CHECK-NEXT:      %[[TORCH_IV:.*]] = torch_c.from_i64 %[[BLOCK_COUNTER]]
+// CHECK-NEXT:      %[[TORCH_BLOCK_ARG:.*]] = torch_c.from_f64 %[[BLOCK_ARG]]
+// CHECK-NEXT:      torch.aten.add.float_int %[[TORCH_BLOCK_ARG]], %[[TORCH_IV]]
+func.func @torch.prim.Loop$while_uses_induction_variable(%arg0: !torch.int, %arg1: !torch.float) -> !torch.float {
+  %float1 = torch.constant.float 1.0
+  %0 = torch.aten.lt.float %float1, %arg1 : !torch.float, !torch.float -> !torch.bool
+  %1 = torch.prim.Loop %arg0, %0, init(%float1) {
+  ^bb0(%arg2: !torch.int, %arg3: !torch.float):
+    %2 = torch.aten.add.float_int %arg3, %arg2 : !torch.float, !torch.int -> !torch.float
+    %3 = torch.aten.lt.float %2, %arg1 : !torch.float, !torch.float -> !torch.bool
+    torch.prim.Loop.condition %3, iter(%2 : !torch.float)
+  } : (!torch.int, !torch.bool, !torch.float) -> !torch.float
+  return %1 : !torch.float
 }
 
 // CHECK-LABEL: func.func @torch.prim.Loop$for

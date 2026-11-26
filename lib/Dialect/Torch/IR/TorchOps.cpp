@@ -623,7 +623,12 @@ ValueRange PrimLoopOp::getSuccessorInputs(RegionSuccessor successor) {
 
 bool PrimLoopOp::isForLike() {
   bool b;
-  return matchPattern(getInitialCondition(), m_TorchConstantBool(&b)) && b;
+  if (!matchPattern(getInitialCondition(), m_TorchConstantBool(&b)) || !b)
+    return false;
+  auto condition =
+      cast<PrimLoopConditionOp>(getRegion().front().getTerminator());
+  return matchPattern(condition.getShouldContinue(), m_TorchConstantBool(&b)) &&
+         b;
 }
 
 //===----------------------------------------------------------------------===//
